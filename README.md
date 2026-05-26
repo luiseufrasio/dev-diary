@@ -30,7 +30,8 @@ A tiny `~/.dev-diary/state.json` (written by `/enable-dev-diary`) points the plu
 ## Install
 
 ```
-/plugin install github:luiseufrasio/dev-diary
+/plugin marketplace add luiseufrasio/dev-diary
+/plugin install dev-diary@dev-diary
 /enable-dev-diary
 ```
 
@@ -45,7 +46,8 @@ The plugin's `hooks/hooks.json` wires `UserPromptSubmit` / `PostToolUse` / `Stop
 
 ```
 .claude-plugin/
-  plugin.json              # manifest (name, version, author)
+  marketplace.json         # marketplace catalog — makes the repo installable
+  plugin.json              # plugin manifest (name, version, author)
 commands/
   enable-dev-diary.md      # /enable-dev-diary  — setup
   dev-diary-query.md       # /dev-diary-query   — CLI wrapper

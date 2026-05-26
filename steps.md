@@ -71,21 +71,28 @@ gh repo create my-dev-diary --private --source=. --push
 
 ## 3. Install the plugin in Claude Code
 
-In any Claude Code session:
+The repo is its own marketplace (`.claude-plugin/marketplace.json`). Install in two steps — add the marketplace, then install the plugin from it:
 
 ```
-/plugin marketplace add <you>/dev-diary
+/plugin marketplace add luiseufrasio/dev-diary
 /plugin install dev-diary@dev-diary
 ```
 
-If the marketplace flow fails (Claude Code's plugin UX is still evolving and the exact commands may vary by version), the reliable fallback for local testing is to clone the plugin directly into Claude's plugin dir:
+`dev-diary@dev-diary` reads as `<plugin-name>@<marketplace-name>` — both happen to be `dev-diary` here.
 
-```powershell
-mkdir $HOME\.claude\plugins -Force -ErrorAction SilentlyContinue
-git clone https://github.com/<you>/dev-diary.git $HOME\.claude\plugins\dev-diary
+**Local testing** (e.g. before pushing changes): point the marketplace at your local clone instead of GitHub. The local path must contain `.claude-plugin/marketplace.json`:
+
+```
+/plugin marketplace add C:\Users\49770413\dev\dev-diary
+/plugin install dev-diary@dev-diary
 ```
 
-Then restart Claude Code. Run `/plugin` (no args) interactively to see what's loaded.
+Verify any time with `/plugin` (no args) for the interactive menu, or non-interactively:
+
+```powershell
+claude plugin validate .            # from the plugin/marketplace repo
+claude plugin marketplace list
+```
 
 ---
 
