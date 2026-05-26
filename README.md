@@ -10,10 +10,10 @@ Every Claude Code session becomes two files in **your diary repo**:
 A local CLI builds a SQLite index from the YAML files so you can ask:
 
 ```bash
-/dev-diary-query --agent claude-code --language python --since 2026-05-01
-/dev-diary-query --issue 123
-/dev-diary-query --user dev@example.com --project web-app
-/dev-diary-show   2026/05/2026-05-23/session-001
+/dev-diary:query --agent claude-code --language python --since 2026-05-01
+/dev-diary:query --issue 123
+/dev-diary:query --user dev@example.com --project web-app
+/dev-diary:show   2026/05/2026-05-23/session-001
 ```
 
 ## Two repos, one workflow
@@ -25,17 +25,17 @@ dev-diary deliberately splits into two pieces:
 | **dev-diary plugin** (this repo) | hooks, slash commands, schema, CLI, default config | installed via `/plugin install` — lives under `~/.claude/plugins/` |
 | **your diary repo** (per dev, you create/fork) | `entries/`, your `dev-diary.config.yaml`, your commits | wherever you clone it — pushed to your GitHub |
 
-A tiny `~/.dev-diary/state.json` (written by `/enable-dev-diary`) points the plugin at your diary repo.
+A tiny `~/.dev-diary/state.json` (written by `/dev-diary:enable`) points the plugin at your diary repo.
 
 ## Install
 
 ```
 /plugin marketplace add luiseufrasio/dev-diary
 /plugin install dev-diary@dev-diary
-/enable-dev-diary
+/dev-diary:enable
 ```
 
-`/enable-dev-diary` walks you through:
+`/dev-diary:enable` walks you through:
 1. Where your diary repo lives (or fork this repo as your starting point)
 2. Writing `~/.dev-diary/state.json`
 3. Copying `config.example.yaml` → `<diary>/dev-diary.config.yaml` for you to tune redaction / push policy
@@ -49,9 +49,9 @@ The plugin's `hooks/hooks.json` wires `UserPromptSubmit` / `PostToolUse` / `Stop
   marketplace.json         # marketplace catalog — makes the repo installable
   plugin.json              # plugin manifest (name, version, author)
 commands/
-  enable-dev-diary.md      # /enable-dev-diary  — setup
-  dev-diary-query.md       # /dev-diary-query   — CLI wrapper
-  dev-diary-show.md        # /dev-diary-show    — render one entry
+  enable.md                # /dev-diary:enable  — setup
+  query.md                 # /dev-diary:query   — CLI wrapper
+  show.md                  # /dev-diary:show    — render one entry
 hooks/
   hooks.json               # declares the three hooks
   post_tool.py             # UserPromptSubmit + PostToolUse — append to buffer
@@ -60,10 +60,10 @@ schema/
   entry.schema.yaml        # canonical schema for *.yaml entries
 cli/
   dev-diary.py             # query CLI (indexes YAML into SQLite)
-config.example.yaml        # template config — copied to user's diary on /enable-dev-diary
+config.example.yaml        # template config — copied to user's diary on /dev-diary:enable
 ```
 
-## Diary repo layout (after /enable-dev-diary)
+## Diary repo layout (after /dev-diary:enable)
 
 ```
 <diary_root>/

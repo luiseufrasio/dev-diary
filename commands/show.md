@@ -5,7 +5,7 @@ argument-hint: <YYYY/MM/YYYY-MM-DD/session-NNN>
 
 Show the markdown content of a specific dev-diary session.
 
-1. Read `~/.dev-diary/state.json` to get `diary_root`. If missing, tell the user to run `/enable-dev-diary` first.
+1. Read `~/.dev-diary/state.json` to get `diary_root`. If missing, tell the user to run `/dev-diary:enable` first.
 
 2. Execute:
    ```

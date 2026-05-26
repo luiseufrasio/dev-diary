@@ -54,7 +54,7 @@ git init -b main
 # Bring the default config (you'll edit this to tune redaction/push policy)
 Copy-Item ..\dev-diary\config.example.yaml .\dev-diary.config.yaml
 
-# Bring the CLI so /dev-diary-query and /dev-diary-show work
+# Bring the CLI so /dev-diary:query and /dev-diary:show work
 mkdir cli
 Copy-Item ..\dev-diary\cli\dev-diary.py .\cli\
 
@@ -99,7 +99,7 @@ claude plugin marketplace list
 ## 4. Enable capture for your diary
 
 ```
-/enable-dev-diary
+/dev-diary:enable
 ```
 
 Answer the prompts; it writes:
@@ -147,9 +147,9 @@ Open `session-001.md` — you should see the prompt as a quote block and a numbe
 From Claude Code:
 
 ```
-/dev-diary-query
-/dev-diary-query --since 2026-05-01 --language python
-/dev-diary-show  2026/05/2026-05-23/session-001
+/dev-diary:query
+/dev-diary:query --since 2026-05-01 --language python
+/dev-diary:show  2026/05/2026-05-23/session-001
 ```
 
 From a terminal:

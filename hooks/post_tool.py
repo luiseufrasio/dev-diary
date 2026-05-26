@@ -2,7 +2,7 @@
 """Claude Code hook — appends one normalized event to the session buffer.
 
 Activated by the plugin's hooks/hooks.json (UserPromptSubmit + PostToolUse).
-Exits silently if /enable-dev-diary hasn't been run yet (no ~/.dev-diary/state.json),
+Exits silently if /dev-diary:enable hasn't been run yet (no ~/.dev-diary/state.json),
 so an installed-but-not-enabled plugin is harmless.
 
 Claude Code passes the event payload as JSON on stdin:

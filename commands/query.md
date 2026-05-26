@@ -5,7 +5,7 @@ argument-hint: [--agent X] [--issue N] [--user EMAIL] [--language X] [--since DA
 
 Run a query against the user's local dev-diary index.
 
-1. Read `~/.dev-diary/state.json` to get `diary_root`. If missing, tell the user to run `/enable-dev-diary` first.
+1. Read `~/.dev-diary/state.json` to get `diary_root`. If missing, tell the user to run `/dev-diary:enable` first.
 
 2. Execute the CLI with the arguments the user passed:
    ```
