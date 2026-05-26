@@ -1,0 +1,73 @@
+# Canonical schema for entries/*/session-NNN.yaml
+# Used by the CLI to validate entries and build the SQLite index.
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: DevDiaryEntry
+type: object
+required: [session_id, agent, user, started_at, events]
+properties:
+
+  session_id:
+    type: string
+    description: Stable id for the session (uuid or agent-provided).
+
+  agent:
+    type: object
+    required: [name]
+    properties:
+      name:    { type: string, enum: [claude-code, cursor, gemini, codex, copilot, other] }
+      model:   { type: string, description: "e.g. claude-opus-4-7, gemini-2.5-pro" }
+      version: { type: string }
+
+  user:
+    type: object
+    required: [git_name, git_email]
+    properties:
+      git_name:  { type: string }
+      git_email: { type: string }
+
+  project:
+    type: object
+    properties:
+      repo:   { type: string, description: "git remote url or path" }
+      branch: { type: string }
+
+  issue:
+    type: object
+    description: Optional — populated when the session is tied to a tracked issue.
+    properties:
+      ref: { type: string, description: "e.g. #123, PROJ-456" }
+      url: { type: string }
+
+  languages:
+    type: array
+    items: { type: string }
+    description: Detected from files touched (python, typescript, go, ...).
+
+  started_at: { type: string, format: date-time }
+  ended_at:   { type: string, format: date-time }
+
+  events:
+    type: array
+    items:
+      type: object
+      required: [timestamp, type, actor]
+      properties:
+        timestamp: { type: string, format: date-time }
+        type:      { type: string, enum: [prompt, tool_use, file_edit, command, message, commit] }
+        actor:     { type: string, enum: [human, ai] }
+        tool:      { type: string, description: "Read, Edit, Bash, WebFetch, ..." }
+        file:      { type: string }
+        lines_added:   { type: integer }
+        lines_removed: { type: integer }
+        command:   { type: string }
+        summary:   { type: string, description: "One-line description for the md rendering" }
+        ref:       { type: string, description: "commit sha, message id, etc." }
+
+  summary:
+    type: object
+    properties:
+      prompt:        { type: string, description: "Initial user request" }
+      outcome:       { type: string, description: "What ended up happening" }
+      files_touched: { type: array, items: { type: string } }
+      commits:       { type: array, items: { type: string } }

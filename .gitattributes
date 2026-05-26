@@ -1,0 +1,5 @@
+# Keep LF in the repo for everything — hooks/CLI run on Linux/macOS too.
+* text=auto eol=lf
+
+# Explicitly binary-safe (none today, but future-proofing the index file type)
+*.sqlite binary

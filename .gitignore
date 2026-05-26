@@ -1,0 +1,5 @@
+# Per-session event buffer — only the flushed yaml/md belong in git
+.dev-diary-buffer/
+
+# Local CLI index — rebuildable from entries/
+.dev-diary/index.sqlite

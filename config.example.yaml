@@ -1,0 +1,35 @@
+# dev-diary plugin config — per-fork. Edit and commit.
+
+push:
+  # when to flush the in-memory session buffer to disk + git
+  on: session_end            # session_end | every_n_minutes | manual
+  every_minutes: 15          # only used when on: every_n_minutes
+  branch: main               # branch to push diary entries to
+  remote: origin
+
+redaction:
+  # patterns scrubbed from event payloads before writing to disk
+  patterns:
+    - '(?i)api[_-]?key\s*[:=]\s*["'']?[A-Za-z0-9_\-]{16,}'
+    - '(?i)bearer\s+[A-Za-z0-9._\-]+'
+    - '-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----'
+    - '(?i)password\s*[:=]\s*["''][^"'']+["'']'
+  # globs whose file contents should never be captured (paths still logged)
+  deny_file_globs:
+    - "**/.env*"
+    - "**/secrets/**"
+    - "**/*.pem"
+    - "**/*.key"
+
+capture:
+  # which agents are enabled
+  agents: [claude-code]
+  # which event types to record
+  events: [prompt, tool_use, file_edit, command, message, commit]
+  # cap on event payload size (chars); larger payloads get truncated + flagged
+  max_payload_chars: 4000
+
+issue_detection:
+  # try to extract issue refs from branch name and commit messages
+  branch_pattern: '(?:issue|fix|feat|bug)[-/](\d+)'
+  message_pattern: '#(\d+)\b'

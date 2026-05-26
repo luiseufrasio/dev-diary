@@ -1,0 +1,72 @@
+session_id: 9f3a2b7c-1e4d-4a8b-bc11-7f0c2a9d6e51
+
+agent:
+  name: claude-code
+  model: claude-opus-4-7
+  version: "2.0.14"
+
+user:
+  git_name: Jane Doe
+  git_email: dev@example.com
+
+project:
+  repo: github.com/acme/web-app
+  branch: fix/issue-123-null-session
+
+issue:
+  ref: "#123"
+  url: https://github.com/acme/web-app/issues/123
+
+languages: [java, xml]
+
+started_at: 2026-05-23T09:14:02-03:00
+ended_at:   2026-05-23T09:42:51-03:00
+
+events:
+  - timestamp: 2026-05-23T09:14:02-03:00
+    type: prompt
+    actor: human
+    summary: "Investigate NPE in SessionManager reported in #123"
+
+  - timestamp: 2026-05-23T09:14:30-03:00
+    type: tool_use
+    actor: ai
+    tool: Grep
+    summary: "Search for SessionManager references"
+
+  - timestamp: 2026-05-23T09:15:11-03:00
+    type: tool_use
+    actor: ai
+    tool: Read
+    file: src/main/java/com/acme/security/SessionManager.java
+    summary: "Read SessionManager.java (lines 1-220)"
+
+  - timestamp: 2026-05-23T09:22:48-03:00
+    type: file_edit
+    actor: ai
+    tool: Edit
+    file: src/main/java/com/acme/security/SessionManager.java
+    lines_added: 3
+    lines_removed: 1
+    summary: "Guard against null principal before calling getName()"
+
+  - timestamp: 2026-05-23T09:31:05-03:00
+    type: command
+    actor: ai
+    tool: Bash
+    command: "mvn -pl security test -Dtest=SessionManagerTest"
+    summary: "Run SessionManager tests — 14 passed"
+
+  - timestamp: 2026-05-23T09:42:30-03:00
+    type: commit
+    actor: human
+    ref: a1b2c3d4
+    summary: "fix(security): null-check principal in SessionManager (#123)"
+
+summary:
+  prompt: "Investigate NPE in SessionManager reported in #123"
+  outcome: "Added null-check, tests pass, committed as a1b2c3d4"
+  files_touched:
+    - src/main/java/com/acme/security/SessionManager.java
+  commits:
+    - a1b2c3d4
