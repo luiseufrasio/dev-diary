@@ -1,33 +1,34 @@
 {
-  "UserPromptSubmit": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool.py --event prompt"
-        }
-      ]
-    }
-  ],
-  "PostToolUse": [
-    {
-      "matcher": "*",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool.py"
-        }
-      ]
-    }
-  ],
-  "Stop": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/flush.py"
-        }
-      ]
-    }
-  ]
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool.py --event prompt"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/flush.py"
+          }
+        ]
+      }
+    ]
+  }
 }
