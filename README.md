@@ -35,10 +35,16 @@ A tiny `~/.dev-diary/state.json` (written by `/dev-diary:enable`) points the plu
 /dev-diary:enable
 ```
 
+> **`/dev-diary:enable` is required before anything is captured.**
+> The hooks are wired as soon as the plugin loads, but they silently no-op until
+> you run enable. The enable command writes `~/.dev-diary/state.json` — the
+> single file that tells the hooks which diary repo to write to. Without it,
+> events are recorded and immediately discarded at session end.
+
 `/dev-diary:enable` walks you through:
 1. The URL of your (private) diary repo, and cloning it / wiring `origin` on a local working copy so sessions auto-push
-2. Writing `~/.dev-diary/state.json` to point the hooks at that working copy
-3. Copying `config.example.yaml` → `<diary>/dev-diary.config.yaml` for you to tune redaction / push policy
+2. Running `hooks/setup.py --diary-root <path>` which writes `~/.dev-diary/state.json` and copies `config.example.yaml` → `<diary>/dev-diary.config.yaml` in one step
+3. Opening `dev-diary.config.yaml` so you can tune redaction patterns and the push policy before your first session
 4. Seeding the first `git push` so the Stop hook's silent push works later
 
 The plugin's `hooks/hooks.json` wires `UserPromptSubmit` / `PostToolUse` / `Stop` automatically — no `~/.claude/settings.json` edits required.
@@ -58,6 +64,7 @@ hooks/
   hooks.json               # declares the three hooks
   post_tool.py             # UserPromptSubmit + PostToolUse — append to buffer
   flush.py                 # Stop — buffer → yaml+md → git commit
+  setup.py                 # /dev-diary:enable — write state.json + seed config
 schema/
   entry.schema.yaml        # canonical schema for *.yaml entries
 cli/
