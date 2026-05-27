@@ -17,9 +17,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
 
 
 FILE_EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -31,6 +37,56 @@ def event_type_for(tool: str | None) -> str:
     if tool == "Bash":
         return "command"
     return "tool_use"
+
+
+def _push_pending(diary_root: Path) -> None:
+    """Push unpushed diary commits if push.when == session_end.
+
+    Called at the start of each new session (UserPromptSubmit) so the previous
+    session's commits are sent in one push rather than after every turn.
+    """
+    if yaml is None:
+        return
+    config_file = diary_root / "dev-diary.config.yaml"
+    try:
+        config = yaml.safe_load(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
+    except Exception:
+        config = {}
+    push_cfg = (config or {}).get("push") or {}
+    push_on = push_cfg.get("when") or push_cfg.get("on") or push_cfg.get(True)
+    if push_on != "session_end":
+        return
+    try:
+        ahead = subprocess.run(
+            ["git", "rev-list", "--count", "@{u}..HEAD"],
+            cwd=diary_root, capture_output=True, text=True, check=False, timeout=10,
+        )
+        if ahead.returncode != 0 or int(ahead.stdout.strip() or "0") == 0:
+            return
+        remote = push_cfg.get("remote", "origin")
+        branch = push_cfg.get("branch", "main")
+        subprocess.run(
+            ["git", "push", remote, branch, "--quiet"],
+            cwd=diary_root, capture_output=True, check=False, timeout=30,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+
+def _cleanup_stale_buffers(buffer_dir: Path, current_session_id: str) -> None:
+    """Delete buffer files from sessions that have already been committed."""
+    if not buffer_dir.exists():
+        return
+    reg_file = buffer_dir / "registry.json"
+    try:
+        registry = json.loads(reg_file.read_text(encoding="utf-8")) if reg_file.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        registry = {}
+    for jsonl_file in buffer_dir.glob("*.jsonl"):
+        sid = jsonl_file.stem
+        if sid != current_session_id and sid in registry:
+            jsonl_file.unlink(missing_ok=True)
+            (buffer_dir / f"{sid}.meta.json").unlink(missing_ok=True)
 
 
 def load_diary_root() -> Path | None:
@@ -94,6 +150,11 @@ def main() -> None:
         return
 
     buffer_dir = diary_root / ".dev-diary-buffer"
+
+    if args.event == "prompt":
+        _push_pending(diary_root)
+        _cleanup_stale_buffers(buffer_dir, session_id)
+
     buffer_dir.mkdir(parents=True, exist_ok=True)
     buffer_file = buffer_dir / f"{session_id}.jsonl"
     meta_file = buffer_dir / f"{session_id}.meta.json"

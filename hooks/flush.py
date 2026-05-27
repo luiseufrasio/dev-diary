@@ -30,6 +30,43 @@ except ImportError:
     sys.exit(0)  # don't fail the agent; just skip the flush
 
 
+def load_registry(buffer_dir: Path) -> dict:
+    reg = buffer_dir / "registry.json"
+    if not reg.exists():
+        return {}
+    try:
+        return json.loads(reg.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_registry(buffer_dir: Path, registry: dict) -> None:
+    (buffer_dir / "registry.json").write_text(
+        json.dumps(registry, indent=2), encoding="utf-8"
+    )
+
+
+def resolve_session_tag(folder: Path, buffer_dir: Path, session_id: str) -> str:
+    """Return a stable session-NNN tag for this session_id.
+
+    On first call for a given session_id the next unused number is allocated
+    and saved in .dev-diary-buffer/registry.json so every subsequent Stop in
+    the same session rewrites the SAME file rather than creating a new one.
+    """
+    registry = load_registry(buffer_dir)
+    if session_id in registry:
+        return registry[session_id]
+    nums = []
+    for p in folder.glob("session-*.yaml"):
+        m = re.match(r"session-(\d+)", p.stem)
+        if m:
+            nums.append(int(m.group(1)))
+    tag = f"session-{((max(nums) + 1) if nums else 1):03d}"
+    registry[session_id] = tag
+    save_registry(buffer_dir, registry)
+    return tag
+
+
 EXT_LANG = {
     ".py": "python",     ".ts": "typescript", ".tsx": "typescript",
     ".js": "javascript", ".jsx": "javascript", ".go": "go",
@@ -189,14 +226,6 @@ def yaml_str(s) -> str:
     return s
 
 
-def next_session_num(folder: Path) -> int:
-    nums = []
-    for p in folder.glob("session-*.yaml"):
-        m = re.match(r"session-(\d+)", p.stem)
-        if m:
-            nums.append(int(m.group(1)))
-    return (max(nums) + 1) if nums else 1
-
 
 # ---------- emit -----------------------------------------------------------
 
@@ -289,8 +318,9 @@ def main() -> None:
     if not diary_root:
         return
 
-    buffer_file = diary_root / ".dev-diary-buffer" / f"{session_id}.jsonl"
-    meta_file   = diary_root / ".dev-diary-buffer" / f"{session_id}.meta.json"
+    buffer_dir  = diary_root / ".dev-diary-buffer"
+    buffer_file = buffer_dir / f"{session_id}.jsonl"
+    meta_file   = buffer_dir / f"{session_id}.meta.json"
     if not buffer_file.exists():
         return
 
@@ -303,8 +333,6 @@ def main() -> None:
                 pass
 
     if not events:
-        buffer_file.unlink(missing_ok=True)
-        meta_file.unlink(missing_ok=True)
         return
 
     # Turn window start (captured before any filtering) — scopes the assistant
@@ -365,8 +393,6 @@ def main() -> None:
         key=lambda e: parse_ts(e.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
     )
     if not events:  # everything was filtered and there were no messages
-        buffer_file.unlink(missing_ok=True)
-        meta_file.unlink(missing_ok=True)
         return
 
     # ---- languages --------------------------------------------------------
@@ -380,7 +406,7 @@ def main() -> None:
     now = datetime.now()
     folder = diary_root / "entries" / f"{now:%Y}" / f"{now:%m}" / f"{now:%Y-%m-%d}"
     folder.mkdir(parents=True, exist_ok=True)
-    session_tag = f"session-{next_session_num(folder):03d}"
+    session_tag = resolve_session_tag(folder, buffer_dir, session_id)
     yaml_path = folder / f"{session_tag}.yaml"
     md_path   = folder / f"{session_tag}.md"
 
@@ -432,16 +458,20 @@ def main() -> None:
         add_res = run(["git", "add", rel_yaml, rel_md])
         if add_res.returncode != 0:
             log_flush_error(diary_root, "git add", add_res)
-        else:
+        elif run(["git", "diff", "--cached", "--quiet"]).returncode != 0:
+            # Only commit when there are staged changes (later turns in the same
+            # session may produce no diff if nothing new was captured).
             commit_res = run(commit_cmd)
             if commit_res.returncode != 0:
                 log_flush_error(diary_root, "git commit", commit_res)
-            elif push_on == "session_end":
+            elif push_on == "every_n_minutes":
                 remote = push_cfg.get("remote", "origin")
                 target_branch = push_cfg.get("branch", "main")
                 push_res = run(["git", "push", remote, target_branch, "--quiet"])
                 if push_res.returncode != 0:
                     log_flush_error(diary_root, "git push", push_res)
+            # session_end: push is deferred — post_tool.py sends it at the
+            # start of the next session so one push covers the full session.
     elif push_on != "manual":
         # Entries were written to disk, but nothing will be committed. `manual`
         # is an intentional opt-out; anything else (missing/typo'd push.when) is
@@ -453,9 +483,10 @@ def main() -> None:
             f"or manual in dev-diary.config.yaml.",
         )
 
-    # ---- cleanup ----------------------------------------------------------
-    buffer_file.unlink(missing_ok=True)
-    meta_file.unlink(missing_ok=True)
+    # Buffer is intentionally kept — subsequent turns in the same session
+    # append to it, and the next Stop call overwrites the same session file.
+    # post_tool.py cleans up stale buffers (from ended sessions) at the
+    # start of each new session.
 
 
 if __name__ == "__main__":
