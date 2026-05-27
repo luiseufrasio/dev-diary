@@ -22,7 +22,7 @@ auto-commit AND auto-push.
    ```
    The hooks read this to know where to flush sessions. Use forward slashes in the path.
 
-5. **Verify the config exists.** If `<diary_root>/dev-diary.config.yaml` is missing, copy `${CLAUDE_PLUGIN_ROOT}/config.example.yaml` into place. Open it so they can tune redaction patterns and the push policy. Note: `push.on: session_end` (the default) requires `origin` to be set and reachable — that's why step 3 matters.
+5. **Verify the config exists.** If `<diary_root>/dev-diary.config.yaml` is missing, copy `${CLAUDE_PLUGIN_ROOT}/config.example.yaml` into place. Open it so they can tune redaction patterns and the push policy. Note: `push.when: session_end` (the default) requires `origin` to be set and reachable — that's why step 3 matters.
 
 6. **Seed the first push** (so credentials are confirmed and the branch tracks the remote): from `<diary_root>`, `git add -A && git commit -m "Initialize diary"` (if anything is uncommitted) then `git push -u origin main`. If push prompts for auth, that's the credential helper kicking in — let it complete once here so the silent push in the Stop hook works later.
 

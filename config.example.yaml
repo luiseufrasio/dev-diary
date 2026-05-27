@@ -1,9 +1,11 @@
 # dev-diary plugin config — per-fork. Edit and commit.
 
 push:
-  # when to flush the in-memory session buffer to disk + git
-  on: session_end            # session_end | every_n_minutes | manual
-  every_minutes: 15          # only used when on: every_n_minutes
+  # when to flush the in-memory session buffer to disk + git.
+  # NOTE: the key is `when`, not `on` — YAML 1.1 (PyYAML) parses a bare `on:`
+  # as the boolean true, which silently breaks config lookups.
+  when: session_end          # session_end | every_n_minutes | manual
+  every_minutes: 15          # only used when: every_n_minutes
   branch: main               # branch to push diary entries to
   remote: origin
   # Diary commits are auto-generated metadata. Signing is disabled by default

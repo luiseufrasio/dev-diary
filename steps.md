@@ -171,7 +171,7 @@ python $diary\cli\dev-diary.py query --issue 123 -v
 | `ModuleNotFoundError: yaml` | `pip install pyyaml` (or `pip install --user pyyaml`). |
 | Hook seems to never fire | Run `/plugin` and confirm `dev-diary` is listed and active. Check `~/.claude/plugins/dev-diary/hooks/hooks.json` exists. |
 | `python: command not found` (Linux) | Edit `hooks/hooks.json` → replace `python` with `python3`, then reinstall the plugin. |
-| Commit lands but `git push` fails | Check `~/.dev-diary/state.json` repo has a working `origin` and your git credentials are configured (`gh auth login` if using gh). Or set `push.on: every_n_minutes` in `dev-diary.config.yaml` to commit without pushing. |
+| Commit lands but `git push` fails | Check `~/.dev-diary/state.json` repo has a working `origin` and your git credentials are configured (`gh auth login` if using gh). Or set `push.when: every_n_minutes` in `dev-diary.config.yaml` to commit without pushing. |
 | `session-001` keeps getting written (not 002, 003...) | The flush picks the next number by scanning today's folder — confirm previous sessions are committed and not deleted. |
 
 ### Manual flush dry-run

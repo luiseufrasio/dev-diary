@@ -7,7 +7,7 @@ files, and writes the canonical pair under:
 
     <diary_root>/entries/YYYY/MM/YYYY-MM-DD/session-NNN.{yaml,md}
 
-Then (per config.push.on) commits and pushes.
+Then (per config.push.when) commits and pushes.
 
 Requires PyYAML for reading the user's dev-diary.config.yaml — install via:
     pip install pyyaml
@@ -323,7 +323,9 @@ def main() -> None:
 
     # ---- commit + push ----------------------------------------------------
     push_cfg = config.get("push") or {}
-    push_on = push_cfg.get("on")
+    # Canonical key is `when`. Tolerate the legacy `on:` key, which YAML 1.1
+    # (PyYAML) parses as the boolean True — so check both the string and True.
+    push_on = push_cfg.get("when") or push_cfg.get("on") or push_cfg.get(True)
     if push_on in ("session_end", "every_n_minutes"):
         short = session_id[:8]
         msg = f"dev-diary: claude-code {short} on {branch} ({session_tag})"
