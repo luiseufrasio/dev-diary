@@ -6,6 +6,11 @@ push:
   every_minutes: 15          # only used when on: every_n_minutes
   branch: main               # branch to push diary entries to
   remote: origin
+  # Diary commits are auto-generated metadata. Signing is disabled by default
+  # because the Stop hook runs non-interactively (no GPG pinentry available),
+  # so a global commit.gpgsign=true would otherwise make every commit fail
+  # silently. Set true only if your hook environment can sign unattended.
+  sign_commits: false
 
 redaction:
   # patterns scrubbed from event payloads before writing to disk

@@ -70,6 +70,25 @@ def git(diary_root: Path, *args: str) -> str | None:
         return None
 
 
+def log_flush_error(diary_root: Path, step: str, result: subprocess.CompletedProcess) -> None:
+    """Record a failed git step so silent commit/push failures are diagnosable.
+
+    Writes to <diary_root>/.dev-diary-buffer/flush.log (gitignored) and stderr.
+    The Stop hook runs non-interactively, so a failing commit/push would
+    otherwise vanish — this surfaces the actual git error."""
+    detail = (result.stderr or result.stdout or "").strip()
+    line = f"[{datetime.now().isoformat(timespec='seconds')}] {step} failed " \
+           f"(exit {result.returncode}): {detail}"
+    sys.stderr.write(f"dev-diary: {line}\n")
+    try:
+        log_dir = diary_root / ".dev-diary-buffer"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "flush.log").open("a", encoding="utf-8", newline="\n") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
 def redact(text: str | None, patterns: list[str], max_chars: int) -> str | None:
     if not text:
         return text
@@ -303,21 +322,38 @@ def main() -> None:
     )
 
     # ---- commit + push ----------------------------------------------------
-    push_on = (config.get("push") or {}).get("on")
+    push_cfg = config.get("push") or {}
+    push_on = push_cfg.get("on")
     if push_on in ("session_end", "every_n_minutes"):
         short = session_id[:8]
         msg = f"dev-diary: claude-code {short} on {branch} ({session_tag})"
-        git(diary_root, "add", str(yaml_path.relative_to(diary_root)),
-                              str(md_path.relative_to(diary_root)))
-        subprocess.run(["git", "commit", "-m", msg, "--quiet"],
-                       cwd=diary_root, check=False)
-        if push_on == "session_end":
-            push_cfg = config.get("push") or {}
-            remote = push_cfg.get("remote", "origin")
-            target_branch = push_cfg.get("branch", "main")
-            subprocess.run(["git", "push", remote, target_branch, "--quiet"],
-                           cwd=diary_root, check=False,
-                           stderr=subprocess.DEVNULL)
+        rel_yaml = str(yaml_path.relative_to(diary_root))
+        rel_md = str(md_path.relative_to(diary_root))
+
+        # Diary commits are auto-generated metadata. GPG signing adds no value
+        # here and breaks inside the hook's non-interactive context (no pinentry
+        # / GPG agent), so disable it unless the user opts back in.
+        commit_cmd = ["git"]
+        if not push_cfg.get("sign_commits", False):
+            commit_cmd += ["-c", "commit.gpgsign=false"]
+        commit_cmd += ["commit", "-m", msg, "--quiet"]
+
+        def run(cmd):
+            return subprocess.run(cmd, cwd=diary_root, capture_output=True, text=True)
+
+        add_res = run(["git", "add", rel_yaml, rel_md])
+        if add_res.returncode != 0:
+            log_flush_error(diary_root, "git add", add_res)
+        else:
+            commit_res = run(commit_cmd)
+            if commit_res.returncode != 0:
+                log_flush_error(diary_root, "git commit", commit_res)
+            elif push_on == "session_end":
+                remote = push_cfg.get("remote", "origin")
+                target_branch = push_cfg.get("branch", "main")
+                push_res = run(["git", "push", remote, target_branch, "--quiet"])
+                if push_res.returncode != 0:
+                    log_flush_error(diary_root, "git push", push_res)
 
     # ---- cleanup ----------------------------------------------------------
     buffer_file.unlink(missing_ok=True)
