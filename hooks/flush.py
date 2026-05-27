@@ -18,7 +18,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -101,31 +101,74 @@ def redact(text: str | None, patterns: list[str], max_chars: int) -> str | None:
     return text
 
 
-def resolve_model(meta_file: Path) -> str | None:
-    """Walk the session transcript JSONL and return the model from the last
-    assistant turn. Best-effort — transcript shape may shift between releases."""
+def read_meta(meta_file: Path) -> tuple[Path | None, str | None]:
+    """Return (transcript_path, session_cwd) stashed by post_tool.py, or (None, None)."""
     if not meta_file.exists():
-        return None
+        return None, None
     try:
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        transcript = Path(meta.get("transcript_path", ""))
-        if not transcript.exists():
-            return None
-        last_model = None
-        for line in transcript.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("type") == "assistant":
-                model = (rec.get("message") or {}).get("model")
-                if model:
-                    last_model = model
-        return last_model
     except (OSError, json.JSONDecodeError):
+        return None, None
+    tp = meta.get("transcript_path")
+    return (Path(tp) if tp else None), meta.get("cwd")
+
+
+def parse_ts(s: str | None) -> datetime | None:
+    """Parse an ISO timestamp (with `Z` or an offset) into an aware UTC datetime."""
+    if not s:
         return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def scan_transcript(transcript_path: Path | None, since: str | None) -> tuple[str | None, list[dict]]:
+    """Single pass over the session transcript JSONL. Returns:
+      - model: the model of the last assistant turn (whole transcript)
+      - messages: `message` events for assistant text blocks at/after `since`,
+        normalized to the buffer event shape and local timezone.
+    Skips `thinking` (internal) and `tool_use` (already captured via PostToolUse).
+    Best-effort — transcript shape may shift between releases."""
+    model: str | None = None
+    messages: list[dict] = []
+    if not transcript_path or not transcript_path.exists():
+        return model, messages
+    since_dt = parse_ts(since)
+    try:
+        lines = transcript_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return model, messages
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("type") != "assistant":
+            continue
+        msg = rec.get("message") or {}
+        if msg.get("model"):
+            model = msg["model"]
+        ts = parse_ts(rec.get("timestamp"))
+        if since_dt and ts and ts < since_dt:
+            continue
+        local_ts = ts.astimezone().isoformat(timespec="seconds") if ts else rec.get("timestamp")
+        for block in msg.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = (block.get("text") or "").strip()
+                if text:
+                    messages.append({
+                        "timestamp": local_ts,
+                        "type": "message",
+                        "actor": "ai",
+                        "summary": text,
+                    })
+    return model, messages
 
 
 def yaml_str(s) -> str:
@@ -267,11 +310,18 @@ def main() -> None:
         e["command"] = redact(e.get("command"), patterns, max_chars)
         e["summary"] = redact(e.get("summary"), patterns, max_chars)
 
+    # ---- meta: transcript + the session's working directory ---------------
+    transcript_path, session_cwd = read_meta(meta_file)
+
     # ---- git + issue ------------------------------------------------------
-    git_name  = git(diary_root, "config", "user.name")
-    git_email = git(diary_root, "config", "user.email")
-    repo_url  = git(diary_root, "config", "--get", "remote.origin.url")
-    branch    = git(diary_root, "rev-parse", "--abbrev-ref", "HEAD")
+    # Run git in the SESSION's repo (where work happened), not the diary repo —
+    # otherwise repo/branch always reflect the diary. Fall back to diary_root
+    # only when the session cwd is unknown or no longer exists.
+    git_dir = Path(session_cwd) if session_cwd and Path(session_cwd).is_dir() else diary_root
+    git_name  = git(git_dir, "config", "user.name")
+    git_email = git(git_dir, "config", "user.email")
+    repo_url  = git(git_dir, "config", "--get", "remote.origin.url")
+    branch    = git(git_dir, "rev-parse", "--abbrev-ref", "HEAD")
 
     issue_ref = None
     issue_cfg = config.get("issue_detection") or {}
@@ -281,15 +331,23 @@ def main() -> None:
         if m:
             issue_ref = f"#{m.group(1)}"
 
+    # ---- transcript: model + assistant messages for this turn -------------
+    started_at = events[0]["timestamp"]
+    model, message_events = scan_transcript(transcript_path, started_at)
+    for e in message_events:
+        e["summary"] = redact(e.get("summary"), patterns, max_chars)
+    # Interleave the assistant's replies with the buffered prompt/tool events.
+    events = sorted(
+        events + message_events,
+        key=lambda e: parse_ts(e.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+    )
+
     # ---- languages --------------------------------------------------------
     languages = sorted({
         EXT_LANG[Path(e["file"]).suffix.lower()]
         for e in events
         if e.get("file") and Path(e["file"]).suffix.lower() in EXT_LANG
     })
-
-    # ---- model from transcript -------------------------------------------
-    model = resolve_model(meta_file)
 
     # ---- destination ------------------------------------------------------
     now = datetime.now()
@@ -300,8 +358,7 @@ def main() -> None:
     md_path   = folder / f"{session_tag}.md"
 
     # ---- summary fields ---------------------------------------------------
-    started_at = events[0]["timestamp"]
-    ended_at   = events[-1]["timestamp"]
+    ended_at = events[-1]["timestamp"]
     prompt = next((e["summary"] for e in events if e["type"] == "prompt"), None)
     files_touched = sorted({e["file"] for e in events if e.get("file")})
 
