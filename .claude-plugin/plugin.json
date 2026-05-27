@@ -1,6 +1,6 @@
 {
   "name": "dev-diary",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Persistent, queryable diary of what AI agents actually did — captures Claude Code sessions as yaml + markdown into a git-versioned diary repo.",
   "author": {
     "name": "Luis Eufrasio",

@@ -36,9 +36,10 @@ A tiny `~/.dev-diary/state.json` (written by `/dev-diary:enable`) points the plu
 ```
 
 `/dev-diary:enable` walks you through:
-1. Where your diary repo lives (or fork this repo as your starting point)
-2. Writing `~/.dev-diary/state.json`
+1. The URL of your (private) diary repo, and cloning it / wiring `origin` on a local working copy so sessions auto-push
+2. Writing `~/.dev-diary/state.json` to point the hooks at that working copy
 3. Copying `config.example.yaml` → `<diary>/dev-diary.config.yaml` for you to tune redaction / push policy
+4. Seeding the first `git push` so the Stop hook's silent push works later
 
 The plugin's `hooks/hooks.json` wires `UserPromptSubmit` / `PostToolUse` / `Stop` automatically — no `~/.claude/settings.json` edits required.
 
