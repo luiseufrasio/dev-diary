@@ -35,6 +35,13 @@ capture:
   events: [prompt, tool_use, file_edit, command, message, commit]
   # cap on event payload size (chars); larger payloads get truncated + flagged
   max_payload_chars: 4000
+  # drop version-control plumbing (git/gh commands) from the diary — it's
+  # process noise, not "what was implemented". Toggle via /dev-diary:ignore-git.
+  ignore_git_ops: true
+  # what counts as a git/gh op — matched against captured command text. Only
+  # matches git/gh in command position (start or after && ; | ( newline), so
+  # an arg like `grep git file` is not mistaken for a git command.
+  git_ops_pattern: '(?:^|[\n;&|(])\s*(?:git|gh)(?:\s|$)'
 
 issue_detection:
   # try to extract issue refs from branch name and commit messages

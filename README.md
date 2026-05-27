@@ -50,9 +50,10 @@ The plugin's `hooks/hooks.json` wires `UserPromptSubmit` / `PostToolUse` / `Stop
   marketplace.json         # marketplace catalog — makes the repo installable
   plugin.json              # plugin manifest (name, version, author)
 commands/
-  enable.md                # /dev-diary:enable  — setup
-  query.md                 # /dev-diary:query   — CLI wrapper
-  show.md                  # /dev-diary:show    — render one entry
+  enable.md                # /dev-diary:enable      — setup
+  query.md                 # /dev-diary:query       — CLI wrapper
+  show.md                  # /dev-diary:show        — render one entry
+  ignore-git.md            # /dev-diary:ignore-git  — toggle git/gh capture
 hooks/
   hooks.json               # declares the three hooks
   post_tool.py             # UserPromptSubmit + PostToolUse — append to buffer
@@ -80,9 +81,9 @@ config.example.yaml        # template config — copied to user's diary on /dev-
 
 1. `UserPromptSubmit` → records your prompt as a `prompt` event.
 2. `PostToolUse` → records each tool call (`Edit`/`Write` → `file_edit`, `Bash` → `command`, otherwise `tool_use`).
-3. `Stop` → flush: redact, derive git context (user/repo/branch, issue ref from branch), detect languages, write `session-NNN.{yaml,md}`, commit, push.
+3. `Stop` → flush: redact, derive git context from the **session's** repo (user/repo/branch, issue ref), pull the assistant's replies for the turn from the transcript as `message` events, detect languages, write `session-NNN.{yaml,md}`, commit, push.
 
-Hooking per-event but committing per-session keeps GitHub noise low and avoids leaking partial state.
+Hooking per-event but committing per-session keeps GitHub noise low and avoids leaking partial state. Version-control plumbing the agent runs (`git`/`gh` commands) is dropped from the diary by default — it's process noise, not implementation; toggle with `/dev-diary:ignore-git` or `capture.ignore_git_ops`.
 
 ## Platform support
 

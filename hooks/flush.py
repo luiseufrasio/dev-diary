@@ -45,6 +45,13 @@ EXT_LANG = {
 
 YAML_NEEDS_QUOTE = re.compile(r'[:#\[\]\{\}&\*!\|>\'"%@`]|^\s|\s$|^[-?]')
 
+# Default heuristic for version-control commands to drop from capture when
+# capture.ignore_git_ops is on. Matches `git`/`gh` only in COMMAND position —
+# at the start or right after a shell separator (&& ; | ( newline) — so an arg
+# like `grep git README.md` is NOT mistaken for a git op. Overridable via
+# config.git_ops_pattern.
+DEFAULT_GIT_OPS_PATTERN = r'(?:^|[\n;&|(])\s*(?:git|gh)(?:\s|$)'
+
 
 # ---------- helpers --------------------------------------------------------
 
@@ -300,15 +307,31 @@ def main() -> None:
         meta_file.unlink(missing_ok=True)
         return
 
+    # Turn window start (captured before any filtering) — scopes the assistant
+    # messages and is the entry's started_at even if every buffered tool/command
+    # event gets filtered out below.
+    turn_start = events[0]["timestamp"]
+
     # ---- config -----------------------------------------------------------
     config_file = diary_root / "dev-diary.config.yaml"
     config = yaml.safe_load(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
     redaction = config.get("redaction") or {}
     patterns  = redaction.get("patterns") or []
-    max_chars = int((config.get("capture") or {}).get("max_payload_chars") or 0)
+    capture_cfg = config.get("capture") or {}
+    max_chars = int(capture_cfg.get("max_payload_chars") or 0)
     for e in events:
         e["command"] = redact(e.get("command"), patterns, max_chars)
         e["summary"] = redact(e.get("summary"), patterns, max_chars)
+
+    # Drop version-control plumbing (git/gh commands) — process noise, not the
+    # work itself. Only `command` events; messages/prompts/edits pass through.
+    if capture_cfg.get("ignore_git_ops", True):
+        git_ops_re = re.compile(capture_cfg.get("git_ops_pattern") or DEFAULT_GIT_OPS_PATTERN)
+        events = [
+            e for e in events
+            if not (e.get("type") == "command" and e.get("command")
+                    and git_ops_re.search(e["command"]))
+        ]
 
     # ---- meta: transcript + the session's working directory ---------------
     transcript_path, session_cwd = read_meta(meta_file)
@@ -332,8 +355,8 @@ def main() -> None:
             issue_ref = f"#{m.group(1)}"
 
     # ---- transcript: model + assistant messages for this turn -------------
-    started_at = events[0]["timestamp"]
-    model, message_events = scan_transcript(transcript_path, started_at)
+    started_at = turn_start
+    model, message_events = scan_transcript(transcript_path, turn_start)
     for e in message_events:
         e["summary"] = redact(e.get("summary"), patterns, max_chars)
     # Interleave the assistant's replies with the buffered prompt/tool events.
@@ -341,6 +364,10 @@ def main() -> None:
         events + message_events,
         key=lambda e: parse_ts(e.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
     )
+    if not events:  # everything was filtered and there were no messages
+        buffer_file.unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+        return
 
     # ---- languages --------------------------------------------------------
     languages = sorted({
