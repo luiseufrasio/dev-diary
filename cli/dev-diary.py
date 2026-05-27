@@ -7,7 +7,7 @@ fast and offline. Index lives at .dev-diary/index.sqlite — gitignored.
     dev-diary query --agent claude-code --language python --since 2026-05-01
     dev-diary query --issue 123
     dev-diary query --user dev@example.com --project web-app
-    dev-diary show 2026-05-23/session-001
+    dev-diary show 2026/05/23/b1a01ad7
     dev-diary reindex
 """
 from __future__ import annotations
@@ -57,7 +57,7 @@ def reindex() -> int:
     con.executescript(SCHEMA)
 
     count = 0
-    for yml in ENTRIES.rglob("session-*.yaml"):
+    for yml in ENTRIES.rglob("*.yaml"):
         data = yaml.safe_load(yml.read_text(encoding="utf-8"))
         con.execute(
             "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -147,7 +147,7 @@ def main() -> None:
     q.set_defaults(func=query)
 
     s = sub.add_parser("show")
-    s.add_argument("ref", help="e.g. 2026/05/2026-05-23/session-001")
+    s.add_argument("ref", help="e.g. 2026/05/23/b1a01ad7")
     s.set_defaults(func=show)
 
     sub.add_parser("reindex").set_defaults(func=lambda _a: reindex())

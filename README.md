@@ -13,7 +13,7 @@ A local CLI builds a SQLite index from the YAML files so you can ask:
 /dev-diary:query --agent claude-code --language python --since 2026-05-01
 /dev-diary:query --issue 123
 /dev-diary:query --user dev@example.com --project web-app
-/dev-diary:show   2026/05/2026-05-23/session-001
+/dev-diary:show   2026/05/23/b1a01ad7
 ```
 
 ## Two repos, one workflow
@@ -77,9 +77,9 @@ config.example.yaml        # template config — copied to user's diary on /dev-
 ```
 <diary_root>/
   dev-diary.config.yaml    # your copy, edited for your redaction/push preferences
-  entries/YYYY/MM/YYYY-MM-DD/
-    session-NNN.md
-    session-NNN.yaml
+  entries/YYYY/MM/DD/
+    <session_id[:8]>.md    # e.g. b1a01ad7.md
+    <session_id[:8]>.yaml  # full session_id in the file header
   .dev-diary-buffer/       # transient JSONL while a session is open (gitignored)
   .dev-diary/index.sqlite  # local CLI index (gitignored)
 ```

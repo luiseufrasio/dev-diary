@@ -73,18 +73,16 @@ def _push_pending(diary_root: Path) -> None:
         pass
 
 
-def _cleanup_stale_buffers(buffer_dir: Path, current_session_id: str) -> None:
-    """Delete buffer files from sessions that have already been committed."""
+def _cleanup_stale_buffers(buffer_dir: Path, diary_root: Path, current_session_id: str) -> None:
+    """Delete buffer files for sessions whose entry file has already been written."""
     if not buffer_dir.exists():
         return
-    reg_file = buffer_dir / "registry.json"
-    try:
-        registry = json.loads(reg_file.read_text(encoding="utf-8")) if reg_file.exists() else {}
-    except (json.JSONDecodeError, OSError):
-        registry = {}
+    entries_root = diary_root / "entries"
     for jsonl_file in buffer_dir.glob("*.jsonl"):
         sid = jsonl_file.stem
-        if sid != current_session_id and sid in registry:
+        if sid == current_session_id:
+            continue
+        if entries_root.exists() and any(entries_root.rglob(f"{sid[:8]}.yaml")):
             jsonl_file.unlink(missing_ok=True)
             (buffer_dir / f"{sid}.meta.json").unlink(missing_ok=True)
 
@@ -153,7 +151,7 @@ def main() -> None:
 
     if args.event == "prompt":
         _push_pending(diary_root)
-        _cleanup_stale_buffers(buffer_dir, session_id)
+        _cleanup_stale_buffers(buffer_dir, diary_root, session_id)
 
     buffer_dir.mkdir(parents=True, exist_ok=True)
     buffer_file = buffer_dir / f"{session_id}.jsonl"

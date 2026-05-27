@@ -5,7 +5,7 @@ Reads the per-session buffer written by post_tool.py, redacts secrets, derives
 git context (user, repo, branch, issue ref), detects languages from touched
 files, and writes the canonical pair under:
 
-    <diary_root>/entries/YYYY/MM/YYYY-MM-DD/session-NNN.{yaml,md}
+    <diary_root>/entries/YYYY/MM/DD/{session_id[:8]}.{yaml,md}
 
 Then (per config.push.when) commits and pushes.
 
@@ -18,7 +18,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -30,41 +30,23 @@ except ImportError:
     sys.exit(0)  # don't fail the agent; just skip the flush
 
 
-def load_registry(buffer_dir: Path) -> dict:
-    reg = buffer_dir / "registry.json"
-    if not reg.exists():
-        return {}
-    try:
-        return json.loads(reg.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+def resolve_session_paths(diary_root: Path, session_id: str) -> tuple[Path, Path]:
+    """Return (yaml_path, md_path) for this session.
 
-
-def save_registry(buffer_dir: Path, registry: dict) -> None:
-    (buffer_dir / "registry.json").write_text(
-        json.dumps(registry, indent=2), encoding="utf-8"
-    )
-
-
-def resolve_session_tag(folder: Path, buffer_dir: Path, session_id: str) -> str:
-    """Return a stable session-NNN tag for this session_id.
-
-    On first call for a given session_id the next unused number is allocated
-    and saved in .dev-diary-buffer/registry.json so every subsequent Stop in
-    the same session rewrites the SAME file rather than creating a new one.
+    Checks the last two calendar days so a session that starts before midnight
+    and flushes after midnight still finds its existing file. Creates today's
+    folder when no existing file is found.
     """
-    registry = load_registry(buffer_dir)
-    if session_id in registry:
-        return registry[session_id]
-    nums = []
-    for p in folder.glob("session-*.yaml"):
-        m = re.match(r"session-(\d+)", p.stem)
-        if m:
-            nums.append(int(m.group(1)))
-    tag = f"session-{((max(nums) + 1) if nums else 1):03d}"
-    registry[session_id] = tag
-    save_registry(buffer_dir, registry)
-    return tag
+    short_id = session_id[:8]
+    now = datetime.now()
+    for days_back in range(2):
+        d = now - timedelta(days=days_back)
+        candidate = diary_root / "entries" / f"{d:%Y}" / f"{d:%m}" / f"{d:%d}" / f"{short_id}.yaml"
+        if candidate.exists():
+            return candidate, candidate.with_suffix(".md")
+    folder = diary_root / "entries" / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{short_id}.yaml", folder / f"{short_id}.md"
 
 
 EXT_LANG = {
@@ -276,10 +258,10 @@ def emit_yaml(path: Path, *, session_id, model, git_name, git_email,
     path.write_text("\n".join(L) + "\n", encoding="utf-8", newline="\n")
 
 
-def emit_md(path: Path, *, date, session_tag, git_name, git_email, repo_url,
+def emit_md(path: Path, *, date, short_id, git_name, git_email, repo_url,
             branch, issue_ref, started_at, ended_at, prompt, events,
             files_touched) -> None:
-    L = [f"# {date} — Session {session_tag}", ""]
+    L = [f"# {date} — {short_id}", ""]
     L.append("- **Agent:** claude-code")
     if git_name or git_email: L.append(f"- **User:** {git_name} <{git_email}>")
     if repo_url:              L.append(f"- **Repo:** {repo_url} @ `{branch}`")
@@ -403,12 +385,8 @@ def main() -> None:
     })
 
     # ---- destination ------------------------------------------------------
-    now = datetime.now()
-    folder = diary_root / "entries" / f"{now:%Y}" / f"{now:%m}" / f"{now:%Y-%m-%d}"
-    folder.mkdir(parents=True, exist_ok=True)
-    session_tag = resolve_session_tag(folder, buffer_dir, session_id)
-    yaml_path = folder / f"{session_tag}.yaml"
-    md_path   = folder / f"{session_tag}.md"
+    short_id = session_id[:8]
+    yaml_path, md_path = resolve_session_paths(diary_root, session_id)
 
     # ---- summary fields ---------------------------------------------------
     ended_at = events[-1]["timestamp"]
@@ -426,7 +404,7 @@ def main() -> None:
     )
     emit_md(
         md_path,
-        date=now.strftime("%Y-%m-%d"), session_tag=session_tag,
+        date=yaml_path.parent.name, short_id=short_id,
         git_name=git_name, git_email=git_email,
         repo_url=repo_url, branch=branch, issue_ref=issue_ref,
         started_at=started_at, ended_at=ended_at,
@@ -439,8 +417,7 @@ def main() -> None:
     # (PyYAML) parses as the boolean True — so check both the string and True.
     push_on = push_cfg.get("when") or push_cfg.get("on") or push_cfg.get(True)
     if push_on in ("session_end", "every_n_minutes"):
-        short = session_id[:8]
-        msg = f"dev-diary: claude-code {short} on {branch} ({session_tag})"
+        msg = f"dev-diary: claude-code {short_id} on {branch}"
         rel_yaml = str(yaml_path.relative_to(diary_root))
         rel_md = str(md_path.relative_to(diary_root))
 
