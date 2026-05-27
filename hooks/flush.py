@@ -70,15 +70,11 @@ def git(diary_root: Path, *args: str) -> str | None:
         return None
 
 
-def log_flush_error(diary_root: Path, step: str, result: subprocess.CompletedProcess) -> None:
-    """Record a failed git step so silent commit/push failures are diagnosable.
-
-    Writes to <diary_root>/.dev-diary-buffer/flush.log (gitignored) and stderr.
-    The Stop hook runs non-interactively, so a failing commit/push would
-    otherwise vanish — this surfaces the actual git error."""
-    detail = (result.stderr or result.stdout or "").strip()
-    line = f"[{datetime.now().isoformat(timespec='seconds')}] {step} failed " \
-           f"(exit {result.returncode}): {detail}"
+def log_flush(diary_root: Path, message: str) -> None:
+    """Write a diagnostic line to <diary_root>/.dev-diary-buffer/flush.log
+    (gitignored) and stderr. The Stop hook runs non-interactively, so anything
+    that goes wrong here would otherwise vanish — this makes it visible."""
+    line = f"[{datetime.now().isoformat(timespec='seconds')}] {message}"
     sys.stderr.write(f"dev-diary: {line}\n")
     try:
         log_dir = diary_root / ".dev-diary-buffer"
@@ -87,6 +83,12 @@ def log_flush_error(diary_root: Path, step: str, result: subprocess.CompletedPro
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def log_flush_error(diary_root: Path, step: str, result: subprocess.CompletedProcess) -> None:
+    """Record a failed git step (commit/push/add) with its actual error output."""
+    detail = (result.stderr or result.stdout or "").strip()
+    log_flush(diary_root, f"{step} failed (exit {result.returncode}): {detail}")
 
 
 def redact(text: str | None, patterns: list[str], max_chars: int) -> str | None:
@@ -356,6 +358,16 @@ def main() -> None:
                 push_res = run(["git", "push", remote, target_branch, "--quiet"])
                 if push_res.returncode != 0:
                     log_flush_error(diary_root, "git push", push_res)
+    elif push_on != "manual":
+        # Entries were written to disk, but nothing will be committed. `manual`
+        # is an intentional opt-out; anything else (missing/typo'd push.when) is
+        # almost certainly a misconfig, so make it visible instead of silent.
+        log_flush(
+            diary_root,
+            f"push.when is missing or invalid (got {push_on!r}); entries written "
+            f"but not committed. Set push.when to session_end, every_n_minutes, "
+            f"or manual in dev-diary.config.yaml.",
+        )
 
     # ---- cleanup ----------------------------------------------------------
     buffer_file.unlink(missing_ok=True)
