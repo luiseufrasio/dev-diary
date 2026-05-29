@@ -91,7 +91,8 @@ def reindex() -> int:
                 (data.get("issue") or {}).get("ref"),
                 data.get("started_at"),
                 data.get("ended_at"),
-                (data.get("summary") or {}).get("prompt"),
+                next((t.get("prompt") for t in (data.get("turns") or []) if t.get("prompt")), None)
+                or (data.get("summary") or {}).get("prompt"),
                 (data.get("summary") or {}).get("outcome"),
             ),
         )
@@ -168,7 +169,8 @@ def list_sessions(args: argparse.Namespace) -> None:
     # timezone skew between when a session starts and when flush writes the file.
     path_prefix = f"entries/{d.year}/{d.month:02d}/{d.day:02d}/"
     rows = con.execute(
-        "SELECT path FROM sessions WHERE REPLACE(path, '\\', '/') LIKE ? ORDER BY started_at",
+        "SELECT path, started_at, prompt FROM sessions"
+        " WHERE REPLACE(path, '\\', '/') LIKE ? ORDER BY started_at",
         (path_prefix + "%",),
     ).fetchall()
 
@@ -177,14 +179,28 @@ def list_sessions(args: argparse.Namespace) -> None:
         return
 
     for r in rows:
-        ref = r["path"].replace("\\", "/").removeprefix("entries/").removesuffix(".yaml")
-        print(ref)
+        hash_ = r["path"].replace("\\", "/").split("/")[-1].removesuffix(".yaml")
+        time_ = (r["started_at"] or "")[:16]
+        print(f"- {hash_}  {time_}")
+        if r["prompt"]:
+            prompt = r["prompt"]
+            if len(prompt) > 80:
+                prompt = prompt[:77] + "..."
+            print(f"    {prompt}")
 
 
 def show(args: argparse.Namespace) -> None:
-    md = ENTRIES / f"{args.ref}.md"
+    ref = args.ref
+    if "/" in ref or "\\" in ref:
+        md = ENTRIES / f"{ref}.md"
+    else:
+        matches = list(ENTRIES.rglob(f"{ref}.md"))
+        if not matches:
+            print(f"not found: {ref}")
+            return
+        md = matches[0]
     if not md.exists():
-        print(f"not found: {md.relative_to(ROOT)}")
+        print(f"not found: {ref}")
         return
     print(md.read_text(encoding="utf-8"))
 

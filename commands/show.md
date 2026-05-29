@@ -1,6 +1,6 @@
 ---
-description: Show a single diary entry by its ref (e.g. 2026/05/2026-05-23/session-001)
-argument-hint: <YYYY/MM/YYYY-MM-DD/session-NNN>
+description: Show a single diary entry by its hash (e.g. a743e5c5)
+argument-hint: <hash>
 ---
 
 Show the markdown content of a specific dev-diary session.
@@ -12,5 +12,6 @@ Show the markdown content of a specific dev-diary session.
    CLI=$(ls ~/.claude/plugins/cache/dev-diary/dev-diary/*/cli/dev-diary.py | head -1)
    python "$CLI" show $ARGUMENTS
    ```
+   The CLI accepts either a bare hash (e.g. `a743e5c5`) or a full ref (`2026/05/29/a743e5c5`).
 
 3. Render the markdown the CLI returns. If the ref isn't found, list the most recent sessions to help the user pick.
