@@ -10,6 +10,7 @@ fast and offline. Index lives at .dev-diary/index.sqlite — gitignored.
     dev-diary list                    # today's sessions
     dev-diary list 2026-05-23         # sessions on a specific date
     dev-diary show 2026/05/2026-05-23/session-001
+    dev-diary replay a743e5c5         # open session as slides in browser
     dev-diary reindex
 """
 from __future__ import annotations
@@ -17,6 +18,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -189,6 +191,313 @@ def list_sessions(args: argparse.Namespace) -> None:
             print(f"    {prompt}")
 
 
+def _parse_turn_responses(md_text: str) -> dict:
+    """Extract Claude's blockquote responses per turn-id from the markdown."""
+    out: dict[str, str] = {}
+    cur_id: str | None = None
+    buf: list[str] = []
+    for line in md_text.splitlines():
+        m = re.match(r"^## (turn-\d+)", line)
+        if m:
+            if cur_id is not None:
+                out[cur_id] = "\n".join(buf).strip()
+            cur_id = m.group(1)
+            buf = []
+        elif cur_id is not None:
+            if line.startswith("> "):
+                buf.append(line[2:])
+            elif line == ">":
+                buf.append("")
+    if cur_id is not None:
+        out[cur_id] = "\n".join(buf).strip()
+    return out
+
+
+def _md_inline(text: str) -> str:
+    """Minimal markdown inline: escape HTML, then restore bold and inline code."""
+    import html as _h
+    t = _h.escape(text)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    return t
+
+
+def _action_html(action: dict) -> str:
+    import html as _h
+    atype = action.get("type", "")
+    tool  = action.get("tool", "")
+    icons = {"Read": "📄", "Edit": "✏️", "Write": "📝", "Grep": "🔍",
+             "Glob": "🗂️", "WebFetch": "🌐", "Agent": "🤖",
+             "Bash": "💻", "command": "💻"}
+    icon = icons.get(tool) or icons.get(atype, "⚙️")
+    css  = {"Read":"read","Edit":"edit","Write":"write","Grep":"grep",
+            "command":"bash","Bash":"bash"}.get(tool or atype, "other")
+
+    h = f'<div class="action action-{css}">'
+    h += f'<span class="aicon">{icon}</span>'
+    if tool:
+        h += f'<span class="atool">{_h.escape(tool)}</span>'
+
+    if atype == "file_edit":
+        fname = Path(action.get("file", "")).name
+        fpath = _h.escape(action.get("file", ""))
+        h += f'<span class="afile" title="{fpath}">{_h.escape(fname)}</span>'
+        diff = action.get("diff", "")
+        if diff:
+            h += (f'<details class="diff-wrap">'
+                  f'<summary>diff</summary>'
+                  f'<pre><code class="language-diff">{_h.escape(diff)}</code></pre>'
+                  f'</details>')
+
+    elif atype == "command":
+        cmd = action.get("cmd", "")
+        out = action.get("output", "")
+        if cmd:
+            h += f'<pre class="cmd-block"><code class="language-bash">{_h.escape(cmd)}</code></pre>'
+        if out:
+            preview = out.strip()[:600] + ("…" if len(out.strip()) > 600 else "")
+            h += (f'<details class="out-wrap">'
+                  f'<summary>output</summary>'
+                  f'<pre class="out-block">{_h.escape(preview)}</pre>'
+                  f'</details>')
+
+    else:
+        summary = action.get("summary", "")
+        if summary:
+            h += f'<span class="asum">{_h.escape(summary)}</span>'
+
+    h += '</div>'
+    return h
+
+
+def _build_replay_html(data: dict, turns: list, responses: dict) -> str:
+    import html as _h
+
+    sid      = (data.get("session_id") or "")[:8]
+    model    = (data.get("agent") or {}).get("model", "")
+    repo_url = (data.get("project") or {}).get("repo", "")
+    branch   = (data.get("project") or {}).get("branch", "")
+    repo     = repo_url.split("/")[-1] if repo_url else ""
+    started  = str(data.get("started_at") or "")[:16].replace("T", " ")
+    ended    = str(data.get("ended_at") or "")[:16].replace("T", " ")
+    files    = (data.get("summary") or {}).get("files_changed") or []
+
+    def slide(body: str, idx: int) -> str:
+        cls = "slide active" if idx == 0 else "slide"
+        return f'<div class="{cls}" id="s{idx}">{body}</div>'
+
+    slides: list[str] = []
+
+    # ── Slide 0: overview ──────────────────────────────────────────────────
+    fl = "".join(
+        f'<li><code>{_h.escape(Path(f).name)}</code>'
+        f'<span class="fpath">{_h.escape(f)}</span></li>'
+        for f in files
+    )
+    ov  = f'<div class="badge">Overview</div>'
+    ov += f'<h1>Session <code>{_h.escape(sid)}</code></h1>'
+    ov += '<div class="meta">'
+    for label, val in [("model", model), ("repo", repo), ("branch", branch),
+                        ("started", started), ("ended", ended),
+                        ("turns", str(len(turns)))]:
+        ov += (f'<div class="mc"><span class="ml">{label}</span>'
+               f'<span class="mv">{_h.escape(val)}</span></div>')
+    ov += '</div>'
+    if fl:
+        ov += f'<h3 class="sec-title">Files changed</h3><ul class="flist">{fl}</ul>'
+    slides.append(slide(ov, 0))
+
+    # ── One slide per turn ─────────────────────────────────────────────────
+    for i, turn in enumerate(turns, 1):
+        tid      = turn.get("id", f"turn-{i}")
+        prompt   = turn.get("prompt", "")
+        actions  = turn.get("actions") or []
+        response = responses.get(tid, "")
+
+        body  = f'<div class="badge">Turn {i} / {len(turns)}</div>'
+        body += (f'<div class="prompt">'
+                 f'<span class="picon">💬</span>'
+                 f'<span class="ptxt">{_h.escape(prompt)}</span>'
+                 f'</div>')
+
+        if actions:
+            act_html = "\n".join(_action_html(a) for a in actions)
+            body += f'<section><h3 class="sec-title">Actions</h3>{act_html}</section>'
+
+        if response:
+            paras = re.split(r"\n{2,}", response)
+            resp_html = "".join(
+                f"<p>{_md_inline(p)}</p>" for p in paras if p.strip()
+            )
+            body += (f'<section class="resp-sec">'
+                     f'<h3 class="sec-title">Claude</h3>'
+                     f'<div class="resp">{resp_html}</div>'
+                     f'</section>')
+
+        slides.append(slide(body, i))
+
+    total = len(slides)
+    slides_html = "\n".join(slides)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>replay · {_h.escape(sid)}</title>
+<link rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:#0d1117;color:#e6edf3;height:100vh;display:flex;flex-direction:column}}
+a{{color:#58a6ff}}
+code{{font-family:'Cascadia Code','Consolas','Fira Code',monospace}}
+
+/* ── layout ── */
+.deck{{flex:1;overflow-y:auto;padding:2rem 2.5rem;max-width:860px;
+  margin:0 auto;width:100%}}
+.slide{{display:none;animation:fadein .2s ease}}
+.slide.active{{display:block}}
+@keyframes fadein{{from{{opacity:0;transform:translateY(6px)}}to{{opacity:1;transform:none}}}}
+
+/* ── badge ── */
+.badge{{display:inline-block;background:#238636;color:#fff;padding:.2rem .7rem;
+  border-radius:12px;font-size:.72rem;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;margin-bottom:1.4rem}}
+
+/* ── overview ── */
+h1{{font-size:1.9rem;color:#79c0ff;margin-bottom:1.4rem;font-weight:600}}
+h1 code{{font-size:1.7rem;color:#79c0ff}}
+.meta{{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-bottom:1.8rem}}
+.mc{{background:#161b22;border:1px solid #30363d;border-radius:8px;
+  padding:.65rem 1rem}}
+.ml{{display:block;font-size:.7rem;color:#8b949e;text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:.2rem}}
+.mv{{color:#e6edf3;font-weight:500;font-size:.9rem;word-break:break-all}}
+.flist{{list-style:none;padding:0}}
+.flist li{{display:flex;gap:.6rem;align-items:baseline;
+  padding:.35rem 0;border-bottom:1px solid #21262d;font-size:.85rem}}
+.flist code{{color:#ffa657}}
+.fpath{{color:#8b949e;font-size:.75rem}}
+
+/* ── turn slide ── */
+.prompt{{display:flex;gap:.9rem;align-items:flex-start;
+  background:#161b22;border-left:4px solid #388bfd;
+  border-radius:0 8px 8px 0;padding:1.1rem 1.3rem;margin-bottom:1.8rem}}
+.picon{{font-size:1.2rem;flex-shrink:0;margin-top:.1rem}}
+.ptxt{{font-size:1.15rem;line-height:1.6;color:#e6edf3}}
+.sec-title{{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;
+  color:#8b949e;margin-bottom:.6rem;padding-bottom:.4rem;
+  border-bottom:1px solid #21262d}}
+section{{margin-bottom:1.4rem}}
+
+/* ── actions ── */
+.action{{display:flex;flex-wrap:wrap;align-items:flex-start;gap:.4rem;
+  background:#161b22;border:1px solid #30363d;border-radius:6px;
+  padding:.55rem .7rem;margin-bottom:.4rem}}
+.aicon{{font-size:.95rem;flex-shrink:0}}
+.atool{{font-size:.75rem;font-weight:700;padding:.1rem .4rem;
+  border-radius:4px;background:#21262d;color:#79c0ff;flex-shrink:0}}
+.action-edit .atool{{color:#ffa657;background:#1f1b14}}
+.action-bash .atool{{color:#3fb950;background:#122117}}
+.action-grep .atool{{color:#d2a8ff;background:#1e1630}}
+.afile{{font-size:.8rem;color:#8b949e;font-family:monospace}}
+.asum{{font-size:.82rem;color:#8b949e;flex:1}}
+
+/* ── command blocks ── */
+.cmd-block{{width:100%;margin-top:.4rem;border-radius:6px;font-size:.82rem;overflow-x:auto}}
+.cmd-block code{{padding:.65rem 1rem!important}}
+.out-wrap,.diff-wrap{{width:100%;margin-top:.35rem;font-size:.8rem}}
+.out-wrap summary,.diff-wrap summary{{color:#8b949e;cursor:pointer;
+  padding:.2rem .4rem;border-radius:4px;user-select:none}}
+.out-wrap summary:hover,.diff-wrap summary:hover{{color:#c9d1d9}}
+.out-block{{background:#0d1117;border:1px solid #30363d;border-radius:6px;
+  padding:.65rem 1rem;font-family:monospace;font-size:.78rem;
+  white-space:pre-wrap;word-break:break-all;color:#8b949e;margin-top:.3rem;
+  max-height:280px;overflow-y:auto}}
+.diff-wrap pre{{margin-top:.3rem;border-radius:6px;font-size:.78rem;max-height:300px;overflow-y:auto}}
+
+/* ── response ── */
+.resp-sec .sec-title{{color:#3fb950}}
+.resp{{color:#c9d1d9;line-height:1.75;font-size:.92rem}}
+.resp p{{margin-bottom:.65rem}}
+.resp strong{{color:#e6edf3}}
+.resp code{{background:#21262d;padding:.1rem .35rem;border-radius:4px;font-size:.85em}}
+
+/* ── nav bar ── */
+.nav{{display:flex;align-items:center;justify-content:space-between;
+  padding:.85rem 2.5rem;background:#161b22;border-top:1px solid #30363d;
+  max-width:860px;margin:0 auto;width:100%}}
+button{{background:#21262d;color:#e6edf3;border:1px solid #30363d;
+  padding:.4rem 1.1rem;border-radius:6px;cursor:pointer;font-size:.88rem;
+  transition:background .12s}}
+button:hover:not(:disabled){{background:#30363d}}
+button:disabled{{opacity:.35;cursor:not-allowed}}
+#ctr{{color:#8b949e;font-size:.85rem;font-variant-numeric:tabular-nums}}
+</style>
+</head>
+<body>
+<div class="deck">
+{slides_html}
+</div>
+<div class="nav">
+  <button id="bk" onclick="go(-1)" disabled>← Back</button>
+  <span id="ctr">1 / {total}</span>
+  <button id="nx" onclick="go(1)">Next →</button>
+</div>
+<script>
+let c=0;
+const S=document.querySelectorAll('.slide'),T={total};
+function go(d){{
+  S[c].classList.remove('active');
+  c=Math.max(0,Math.min(T-1,c+d));
+  S[c].classList.add('active');
+  document.getElementById('ctr').textContent=(c+1)+' / '+T;
+  document.getElementById('bk').disabled=c===0;
+  document.getElementById('nx').disabled=c===T-1;
+  document.querySelectorAll('pre code').forEach(el=>{{
+    if(!el.dataset.highlighted)hljs.highlightElement(el);
+  }});
+}}
+document.addEventListener('keydown',e=>{{
+  if(e.key==='ArrowRight'||e.key==='ArrowDown')go(1);
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')go(-1);
+}});
+document.querySelectorAll('pre code').forEach(el=>hljs.highlightElement(el));
+</script>
+</body>
+</html>"""
+
+
+def replay(args: argparse.Namespace) -> None:
+    import tempfile
+    import webbrowser
+
+    ref = args.ref
+    if "/" in ref or "\\" in ref:
+        yaml_path = ENTRIES / f"{ref}.yaml"
+        md_path   = ENTRIES / f"{ref}.md"
+    else:
+        matches = list(ENTRIES.rglob(f"{ref}.yaml"))
+        if not matches:
+            print(f"not found: {ref}")
+            return
+        yaml_path = matches[0]
+        md_path   = yaml_path.with_suffix(".md")
+
+    data      = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    md_text   = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+    turns     = data.get("turns") or []
+    responses = _parse_turn_responses(md_text)
+
+    html = _build_replay_html(data, turns, responses)
+    tmp  = Path(tempfile.mktemp(suffix=".html"))
+    tmp.write_text(html, encoding="utf-8")
+    webbrowser.open(tmp.as_uri())
+    print(f"replay: {len(turns)} turn(s) → {tmp.name}")
+
+
 def show(args: argparse.Namespace) -> None:
     ref = args.ref
     if "/" in ref or "\\" in ref:
@@ -228,6 +537,10 @@ def main() -> None:
     s = sub.add_parser("show")
     s.add_argument("ref", help="e.g. 2026/05/23/b1a01ad7")
     s.set_defaults(func=show)
+
+    rp = sub.add_parser("replay", help="open session as slides in browser")
+    rp.add_argument("ref", help="session hash or full ref")
+    rp.set_defaults(func=replay)
 
     sub.add_parser("reindex").set_defaults(func=lambda _a: reindex())
 
