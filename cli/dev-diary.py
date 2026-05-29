@@ -7,12 +7,15 @@ fast and offline. Index lives at .dev-diary/index.sqlite — gitignored.
     dev-diary query --agent claude-code --language python --since 2026-05-01
     dev-diary query --issue 123
     dev-diary query --user dev@example.com --project web-app
-    dev-diary show 2026/05/23/b1a01ad7
+    dev-diary list                    # today's sessions
+    dev-diary list 2026-05-23         # sessions on a specific date
+    dev-diary show 2026/05/2026-05-23/session-001
     dev-diary reindex
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import sqlite3
 from pathlib import Path
 
@@ -137,6 +140,27 @@ def query(args: argparse.Namespace) -> None:
             print(f"    > {r['prompt']}")
 
 
+def list_sessions(args: argparse.Namespace) -> None:
+    if not INDEX.exists():
+        reindex()
+    con = sqlite3.connect(INDEX)
+    con.row_factory = sqlite3.Row
+
+    date = args.date or datetime.date.today().isoformat()
+    rows = con.execute(
+        "SELECT path FROM sessions WHERE started_at LIKE ? ORDER BY started_at",
+        (f"{date}%",),
+    ).fetchall()
+
+    if not rows:
+        print(f"(no sessions on {date})")
+        return
+
+    for r in rows:
+        ref = r["path"].replace("\\", "/").removeprefix("entries/").removesuffix(".yaml")
+        print(ref)
+
+
 def show(args: argparse.Namespace) -> None:
     md = ENTRIES / f"{args.ref}.md"
     if not md.exists():
@@ -160,6 +184,10 @@ def main() -> None:
     q.add_argument("--until")
     q.add_argument("-v", "--verbose", action="store_true")
     q.set_defaults(func=query)
+
+    ls = sub.add_parser("list")
+    ls.add_argument("date", nargs="?", help="YYYY-MM-DD (default: today)")
+    ls.set_defaults(func=list_sessions)
 
     s = sub.add_parser("show")
     s.add_argument("ref", help="e.g. 2026/05/23/b1a01ad7")
