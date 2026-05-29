@@ -213,15 +213,6 @@ def _parse_turn_responses(md_text: str) -> dict:
     return out
 
 
-def _md_inline(text: str) -> str:
-    """Minimal markdown inline: escape HTML, then restore bold and inline code."""
-    import html as _h
-    t = _h.escape(text)
-    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
-    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
-    return t
-
-
 def _action_html(action: dict) -> str:
     import html as _h
     atype = action.get("type", "")
@@ -270,6 +261,24 @@ def _action_html(action: dict) -> str:
     return h
 
 
+def _response_subtitle(response: str) -> str:
+    """One-line headline for the slide: first heading, else first non-empty line."""
+    if not response:
+        return ""
+    for line in response.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^#{1,4}\s+(.+?)\s*#*\s*$", line)
+        if m:
+            return m.group(1).strip()
+        # Strip inline emphasis/code so the headline reads clean
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        return (text[:140].rstrip() + "…") if len(text) > 140 else text
+    return ""
+
+
 def _build_replay_html(data: dict, turns: list, responses: dict) -> str:
     import html as _h
 
@@ -308,36 +317,45 @@ def _build_replay_html(data: dict, turns: list, responses: dict) -> str:
     slides.append(slide(ov, 0))
 
     # ── One slide per turn ─────────────────────────────────────────────────
+    # Index 0 has no response (overview slide); turn responses sit at i=1..N.
+    response_texts: list[str] = [""]
+
     for i, turn in enumerate(turns, 1):
         tid      = turn.get("id", f"turn-{i}")
         prompt   = turn.get("prompt", "")
         actions  = turn.get("actions") or []
         response = responses.get(tid, "")
+        subtitle = _response_subtitle(response)
+        response_texts.append(response)
 
         body  = f'<div class="badge">Turn {i} / {len(turns)}</div>'
-        body += (f'<div class="prompt">'
+        if subtitle:
+            body += f'<h2 class="tldr">{_h.escape(subtitle)}</h2>'
+
+        if response:
+            # marked.js renders this client-side from RESPONSES[{i}]
+            body += (f'<section class="resp-sec">'
+                     f'<h3 class="sec-title">What was done</h3>'
+                     f'<div class="resp" id="resp-{i}"></div>'
+                     f'</section>')
+
+        body += '<section class="ctx-sec">'
+        body += (f'<h3 class="sec-title">Prompt</h3>'
+                 f'<div class="prompt">'
                  f'<span class="picon">💬</span>'
                  f'<span class="ptxt">{_h.escape(prompt)}</span>'
                  f'</div>')
-
         if actions:
             act_html = "\n".join(_action_html(a) for a in actions)
-            body += f'<section><h3 class="sec-title">Actions</h3>{act_html}</section>'
-
-        if response:
-            paras = re.split(r"\n{2,}", response)
-            resp_html = "".join(
-                f"<p>{_md_inline(p)}</p>" for p in paras if p.strip()
-            )
-            body += (f'<section class="resp-sec">'
-                     f'<h3 class="sec-title">Claude</h3>'
-                     f'<div class="resp">{resp_html}</div>'
-                     f'</section>')
+            body += f'<h3 class="sec-title act-title">Actions</h3>{act_html}'
+        body += '</section>'
 
         slides.append(slide(body, i))
 
     total = len(slides)
     slides_html = "\n".join(slides)
+    # Replace `</` so an embedded `</script>` can't close the host <script> tag.
+    responses_json = json.dumps(response_texts).replace("</", "<\\/")
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -347,6 +365,7 @@ def _build_replay_html(data: dict, turns: list, responses: dict) -> str:
 <link rel="stylesheet"
   href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -382,15 +401,22 @@ h1 code{{font-size:1.7rem;color:#79c0ff}}
 .fpath{{color:#8b949e;font-size:.75rem}}
 
 /* ── turn slide ── */
+.tldr{{font-size:1.55rem;color:#79c0ff;font-weight:600;line-height:1.35;
+  margin-bottom:1.4rem}}
 .prompt{{display:flex;gap:.9rem;align-items:flex-start;
   background:#161b22;border-left:4px solid #388bfd;
-  border-radius:0 8px 8px 0;padding:1.1rem 1.3rem;margin-bottom:1.8rem}}
+  border-radius:0 8px 8px 0;padding:1.1rem 1.3rem;margin-bottom:1rem}}
 .picon{{font-size:1.2rem;flex-shrink:0;margin-top:.1rem}}
-.ptxt{{font-size:1.15rem;line-height:1.6;color:#e6edf3}}
+.ptxt{{font-size:1.05rem;line-height:1.6;color:#e6edf3}}
 .sec-title{{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;
   color:#8b949e;margin-bottom:.6rem;padding-bottom:.4rem;
   border-bottom:1px solid #21262d}}
+.act-title{{margin-top:1.2rem}}
 section{{margin-bottom:1.4rem}}
+.ctx-sec{{margin-top:1.8rem;padding-top:1.4rem;border-top:1px dashed #30363d}}
+.ctx-sec .prompt{{background:#0d1117;border-left:3px solid #388bfd;
+  padding:.7rem 1rem;margin-bottom:0}}
+.ctx-sec .ptxt{{font-size:.92rem;color:#c9d1d9}}
 
 /* ── actions ── */
 .action{{display:flex;flex-wrap:wrap;align-items:flex-start;gap:.4rem;
@@ -420,10 +446,33 @@ section{{margin-bottom:1.4rem}}
 
 /* ── response ── */
 .resp-sec .sec-title{{color:#3fb950}}
-.resp{{color:#c9d1d9;line-height:1.75;font-size:.92rem}}
-.resp p{{margin-bottom:.65rem}}
+.resp{{color:#c9d1d9;line-height:1.7;font-size:.93rem}}
+.resp > :first-child{{margin-top:0}}
+.resp > :last-child{{margin-bottom:0}}
+.resp p{{margin:0 0 .7rem}}
 .resp strong{{color:#e6edf3}}
-.resp code{{background:#21262d;padding:.1rem .35rem;border-radius:4px;font-size:.85em}}
+.resp em{{color:#e6edf3}}
+.resp h1,.resp h2{{font-size:1.1rem;color:#e6edf3;margin:1.3rem 0 .55rem;
+  font-weight:600;padding-bottom:.3rem;border-bottom:1px solid #21262d}}
+.resp h3,.resp h4{{font-size:.95rem;color:#e6edf3;margin:1.1rem 0 .45rem;font-weight:600}}
+.resp ul,.resp ol{{margin:.3rem 0 .8rem 1.5rem;padding:0}}
+.resp li{{margin-bottom:.25rem}}
+.resp li > p{{margin:0}}
+.resp blockquote{{border-left:3px solid #30363d;padding:.15rem .9rem;
+  color:#8b949e;margin:.7rem 0}}
+.resp blockquote p{{margin:.3rem 0}}
+.resp code{{background:#21262d;padding:.1rem .35rem;border-radius:4px;
+  font-size:.85em;color:#ffa657}}
+.resp pre{{background:#0d1117;border:1px solid #30363d;border-radius:6px;
+  margin:.7rem 0;padding:0;overflow-x:auto}}
+.resp pre code{{background:transparent;padding:.7rem 1rem;display:block;
+  font-size:.82rem;color:#e6edf3}}
+.resp table{{border-collapse:collapse;margin:.7rem 0;font-size:.86rem;
+  display:block;overflow-x:auto}}
+.resp th,.resp td{{border:1px solid #30363d;padding:.4rem .7rem;text-align:left}}
+.resp th{{background:#161b22;font-weight:600;color:#e6edf3}}
+.resp hr{{border:0;border-top:1px solid #30363d;margin:1.2rem 0}}
+.resp a{{text-decoration:underline}}
 
 /* ── nav bar ── */
 .nav{{display:flex;align-items:center;justify-content:space-between;
@@ -447,6 +496,12 @@ button:disabled{{opacity:.35;cursor:not-allowed}}
   <button id="nx" onclick="go(1)">Next →</button>
 </div>
 <script>
+const RESPONSES={responses_json};
+marked.setOptions({{gfm:true,breaks:false}});
+RESPONSES.forEach((md,i)=>{{
+  const el=document.getElementById('resp-'+i);
+  if(el&&md)el.innerHTML=marked.parse(md);
+}});
 let c=0;
 const S=document.querySelectorAll('.slide'),T={total};
 function go(d){{
