@@ -154,9 +154,18 @@ def list_sessions(args: argparse.Namespace) -> None:
     con.row_factory = sqlite3.Row
 
     date = args.date or datetime.date.today().isoformat()
+    try:
+        d = datetime.date.fromisoformat(date)
+    except ValueError:
+        print(f"error: invalid date '{date}', expected YYYY-MM-DD")
+        return
+
+    # Filter by path date (directory structure), not started_at, to avoid
+    # timezone skew between when a session starts and when flush writes the file.
+    path_prefix = f"entries/{d.year}/{d.month:02d}/{d.day:02d}/"
     rows = con.execute(
-        "SELECT path FROM sessions WHERE started_at LIKE ? ORDER BY started_at",
-        (f"{date}%",),
+        "SELECT path FROM sessions WHERE REPLACE(path, '\\', '/') LIKE ? ORDER BY started_at",
+        (path_prefix + "%",),
     ).fetchall()
 
     if not rows:
