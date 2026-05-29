@@ -7,10 +7,9 @@ Show the markdown content of a specific dev-diary session.
 
 1. Check `~/.dev-diary/state.json` exists. If missing, tell the user to run `/dev-diary:enable` first.
 
-2. Find the plugin CLI and execute:
+2. Execute:
    ```bash
-   CLI=$(ls ~/.claude/plugins/cache/dev-diary/dev-diary/*/cli/dev-diary.py | head -1)
-   python "$CLI" show $ARGUMENTS
+   python ~/.claude/plugins/marketplaces/dev-diary/cli/dev-diary.py show $ARGUMENTS
    ```
    The CLI accepts either a bare hash (e.g. `a743e5c5`) or a full ref (`2026/05/29/a743e5c5`).
 
