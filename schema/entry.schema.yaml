@@ -1,27 +1,25 @@
-# Canonical schema for entries/*/session-NNN.yaml
-# Used by the CLI to validate entries and build the SQLite index.
+# Canonical schema for entries/YYYY/MM/DD/{session_id[:8]}.yaml
 
 $schema: "https://json-schema.org/draft/2020-12/schema"
 title: DevDiaryEntry
 type: object
-required: [session_id, agent, user, started_at, events]
+required: [session_id, agent, user, started_at, turns]
 properties:
 
   session_id:
     type: string
-    description: Stable id for the session (uuid or agent-provided).
+    description: Full UUID for the session.
 
   agent:
     type: object
     required: [name]
     properties:
       name:    { type: string, enum: [claude-code, cursor, gemini, codex, copilot, other] }
-      model:   { type: string, description: "e.g. claude-opus-4-7, gemini-2.5-pro" }
+      model:   { type: string }
       version: { type: string }
 
   user:
     type: object
-    required: [git_name, git_email]
     properties:
       git_name:  { type: string }
       git_email: { type: string }
@@ -29,12 +27,11 @@ properties:
   project:
     type: object
     properties:
-      repo:   { type: string, description: "git remote url or path" }
+      repo:   { type: string }
       branch: { type: string }
 
   issue:
     type: object
-    description: Optional — populated when the session is tied to a tracked issue.
     properties:
       ref: { type: string, description: "e.g. #123, PROJ-456" }
       url: { type: string }
@@ -42,32 +39,47 @@ properties:
   languages:
     type: array
     items: { type: string }
-    description: Detected from files touched (python, typescript, go, ...).
 
   started_at: { type: string, format: date-time }
   ended_at:   { type: string, format: date-time }
 
-  events:
+  turns:
     type: array
     items:
       type: object
-      required: [timestamp, type, actor]
+      required: [id, started_at, ended_at]
       properties:
-        timestamp: { type: string, format: date-time }
-        type:      { type: string, enum: [prompt, tool_use, file_edit, command, message, commit] }
-        actor:     { type: string, enum: [human, ai] }
-        tool:      { type: string, description: "Read, Edit, Bash, WebFetch, ..." }
-        file:      { type: string }
-        lines_added:   { type: integer }
-        lines_removed: { type: integer }
-        command:   { type: string }
-        summary:   { type: string, description: "One-line description for the md rendering" }
-        ref:       { type: string, description: "commit sha, message id, etc." }
+        id:         { type: string, description: "turn-1, turn-2, …" }
+        prompt:     { type: string, description: "User's message that opened this turn." }
+        started_at: { type: string, format: date-time }
+        ended_at:   { type: string, format: date-time }
+        actions:
+          type: array
+          description: Technical actions Claude took — file edits, commands, tool calls.
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:    { type: string, enum: [file_edit, command, tool_use] }
+              tool:    { type: string, description: "Edit, Write, MultiEdit, Bash, …" }
+              file:    { type: string }
+              diff:    { type: string, description: "Unified diff for Edit actions." }
+              lines:   { type: integer, description: "Total lines for Write actions." }
+              snippet: { type: string, description: "First ~20 lines of written content." }
+              edits:
+                type: array
+                description: Per-edit diffs for MultiEdit.
+                items:
+                  type: object
+                  properties:
+                    diff: { type: string }
+              cmd:     { type: string, description: "Shell command for Bash actions." }
+              output:  { type: string, description: "Stdout/stderr of the command." }
+              summary: { type: string }
 
   summary:
     type: object
     properties:
-      prompt:        { type: string, description: "Initial user request" }
-      outcome:       { type: string, description: "What ended up happening" }
-      files_touched: { type: array, items: { type: string } }
-      commits:       { type: array, items: { type: string } }
+      files_changed: { type: array, items: { type: string } }
+      commands_run:  { type: integer }
+      turns:         { type: integer }

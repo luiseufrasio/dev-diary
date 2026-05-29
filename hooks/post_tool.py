@@ -9,9 +9,9 @@ Claude Code passes the event payload as JSON on stdin:
   PostToolUse      -> { session_id, transcript_path, cwd, tool_name, tool_input, tool_response }
   UserPromptSubmit -> { session_id, transcript_path, cwd, prompt }
 
-We normalize each into { timestamp, type, actor, tool, file, command, summary }
-and append to a per-session JSONL buffer under <diary_root>/.dev-diary-buffer/.
-The Stop hook (flush.py) turns the buffer into yaml + md.
+We normalize each into a buffer event and append to a per-session JSONL file under
+<diary_root>/.dev-diary-buffer/. The Stop hook (flush.py) groups events into turns
+and writes yaml + md.
 """
 from __future__ import annotations
 
@@ -29,6 +29,9 @@ except ImportError:
 
 
 FILE_EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+# Hard cap on detail fields captured here; flush.py applies config-level truncation.
+DETAIL_MAX = 4000
 
 
 def event_type_for(tool: str | None) -> str:
@@ -107,22 +110,66 @@ def build_prompt_event(payload: dict, ts: str) -> dict:
     }
 
 
+def _extract_response(tool_response: object) -> str:
+    """Normalise tool_response to a plain string."""
+    if tool_response is None:
+        return ""
+    if isinstance(tool_response, str):
+        return tool_response
+    if isinstance(tool_response, dict):
+        return (
+            tool_response.get("output")
+            or tool_response.get("stdout")
+            or tool_response.get("content")
+            or json.dumps(tool_response)
+        )
+    return str(tool_response)
+
+
 def build_tool_event(payload: dict, ts: str) -> dict:
     tool = payload.get("tool_name")
     etype = event_type_for(tool)
     tin = payload.get("tool_input") or {}
+    raw_resp = _extract_response(payload.get("tool_response"))
 
+    detail: dict = {}
     summary = tin.get("description")
-    if not summary:
-        if etype == "command":
+
+    if etype == "command":
+        if not summary:
             summary = f"Ran: {tin.get('command', '')}"
-        elif etype == "file_edit":
-            summary = f"Edited {tin.get('file_path', '')}"
-        else:
-            fp = tin.get("file_path")
+        if raw_resp.strip():
+            detail["output"] = raw_resp[:DETAIL_MAX]
+
+    elif etype == "file_edit":
+        fp = tin.get("file_path", "")
+        if not summary:
+            summary = f"Edited {fp}"
+        if tool == "Edit":
+            if tin.get("old_string") is not None:
+                detail["old"] = str(tin["old_string"])[:DETAIL_MAX]
+            if tin.get("new_string") is not None:
+                detail["new"] = str(tin["new_string"])[:DETAIL_MAX]
+        elif tool == "Write":
+            content = str(tin.get("content") or "")
+            detail["content"] = content[:DETAIL_MAX]
+            detail["total_lines"] = len(content.splitlines())
+        elif tool == "MultiEdit":
+            edits = tin.get("edits") or []
+            detail["edits"] = [
+                {
+                    "old": str(e.get("old_string", ""))[:500],
+                    "new": str(e.get("new_string", ""))[:500],
+                }
+                for e in edits[:10]
+            ]
+
+    else:
+        fp = tin.get("file_path")
+        if not summary:
             summary = f"{tool} {fp}" if fp else tool
 
-    return {
+    event: dict = {
         "timestamp": ts,
         "type": etype,
         "actor": "ai",
@@ -131,6 +178,9 @@ def build_tool_event(payload: dict, ts: str) -> dict:
         "command": tin.get("command"),
         "summary": summary,
     }
+    if detail:
+        event["detail"] = detail
+    return event
 
 
 def main() -> None:

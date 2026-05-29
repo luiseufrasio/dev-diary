@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS session_languages (
   session_id TEXT, language TEXT,
   PRIMARY KEY (session_id, language)
 );
+CREATE TABLE IF NOT EXISTS session_files (
+  session_id TEXT, file TEXT,
+  PRIMARY KEY (session_id, file)
+);
 CREATE INDEX IF NOT EXISTS idx_started ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_agent   ON sessions(agent_name);
 CREATE INDEX IF NOT EXISTS idx_issue   ON sessions(issue_ref);
@@ -82,6 +86,13 @@ def reindex() -> int:
                 "INSERT OR IGNORE INTO session_languages VALUES (?,?)",
                 (data["session_id"], lang),
             )
+        # files_changed lives in summary (new schema); fall back to files_touched (old)
+        summary = data.get("summary") or {}
+        for f in summary.get("files_changed") or summary.get("files_touched") or []:
+            con.execute(
+                "INSERT OR IGNORE INTO session_files VALUES (?,?)",
+                (data["session_id"], f),
+            )
         count += 1
 
     con.commit()
@@ -106,6 +117,9 @@ def query(args: argparse.Namespace) -> None:
     if args.language:
         where.append("session_id IN (SELECT session_id FROM session_languages WHERE language = ?)")
         params.append(args.language)
+    if args.file:
+        where.append("session_id IN (SELECT session_id FROM session_files WHERE file LIKE ?)")
+        params.append(f"%{args.file}%")
 
     sql = "SELECT * FROM sessions"
     if where:
@@ -141,6 +155,7 @@ def main() -> None:
     q.add_argument("--user")
     q.add_argument("--project")
     q.add_argument("--language")
+    q.add_argument("--file", help="filter by file path substring")
     q.add_argument("--since")
     q.add_argument("--until")
     q.add_argument("-v", "--verbose", action="store_true")

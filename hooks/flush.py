@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Claude Code Stop hook — buffer JSONL -> session yaml + md, then commit.
 
-Reads the per-session buffer written by post_tool.py, redacts secrets, derives
-git context (user, repo, branch, issue ref), detects languages from touched
-files, and writes the canonical pair under:
+Reads the per-session buffer written by post_tool.py, groups events into
+conversation turns, derives git context, and writes the canonical pair under:
 
     <diary_root>/entries/YYYY/MM/DD/{session_id[:8]}.{yaml,md}
 
-Then (per config.push.when) commits and pushes.
+YAML holds the technical record (diffs, command output, file changes).
+Markdown holds the human-readable narrative (prompts, step-by-step, Claude replies).
 
-Requires PyYAML for reading the user's dev-diary.config.yaml — install via:
-    pip install pyyaml
+Requires PyYAML:  pip install pyyaml
 """
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import subprocess
@@ -30,12 +30,13 @@ except ImportError:
     sys.exit(0)  # don't fail the agent; just skip the flush
 
 
+# ---------- path resolution ------------------------------------------------
+
 def resolve_session_paths(diary_root: Path, session_id: str) -> tuple[Path, Path]:
     """Return (yaml_path, md_path) for this session.
 
     Checks the last two calendar days so a session that starts before midnight
-    and flushes after midnight still finds its existing file. Creates today's
-    folder when no existing file is found.
+    and flushes after midnight still finds its existing file.
     """
     short_id = session_id[:8]
     now = datetime.now()
@@ -48,6 +49,8 @@ def resolve_session_paths(diary_root: Path, session_id: str) -> tuple[Path, Path
     folder.mkdir(parents=True, exist_ok=True)
     return folder / f"{short_id}.yaml", folder / f"{short_id}.md"
 
+
+# ---------- constants ------------------------------------------------------
 
 EXT_LANG = {
     ".py": "python",     ".ts": "typescript", ".tsx": "typescript",
@@ -64,11 +67,6 @@ EXT_LANG = {
 
 YAML_NEEDS_QUOTE = re.compile(r'[:#\[\]\{\}&\*!\|>\'"%@`]|^\s|\s$|^[-?]')
 
-# Default heuristic for version-control commands to drop from capture when
-# capture.ignore_git_ops is on. Matches `git`/`gh` only in COMMAND position —
-# at the start or right after a shell separator (&& ; | ( newline) — so an arg
-# like `grep git README.md` is NOT mistaken for a git op. Overridable via
-# config.git_ops_pattern.
 DEFAULT_GIT_OPS_PATTERN = r'(?:^|[\n;&|(])\s*(?:git|gh)(?:\s|$)'
 
 
@@ -85,11 +83,10 @@ def load_diary_root() -> Path | None:
     return diary if diary.exists() else None
 
 
-def git(diary_root: Path, *args: str) -> str | None:
+def git(cwd: Path, *args: str) -> str | None:
     try:
         out = subprocess.run(
-            ["git", *args],
-            cwd=diary_root, capture_output=True, text=True, check=False,
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=False,
         )
         return out.stdout.strip().splitlines()[0] if out.stdout.strip() else None
     except (FileNotFoundError, OSError):
@@ -97,9 +94,6 @@ def git(diary_root: Path, *args: str) -> str | None:
 
 
 def log_flush(diary_root: Path, message: str) -> None:
-    """Write a diagnostic line to <diary_root>/.dev-diary-buffer/flush.log
-    (gitignored) and stderr. The Stop hook runs non-interactively, so anything
-    that goes wrong here would otherwise vanish — this makes it visible."""
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {message}"
     sys.stderr.write(f"dev-diary: {line}\n")
     try:
@@ -112,7 +106,6 @@ def log_flush(diary_root: Path, message: str) -> None:
 
 
 def log_flush_error(diary_root: Path, step: str, result: subprocess.CompletedProcess) -> None:
-    """Record a failed git step (commit/push/add) with its actual error output."""
     detail = (result.stderr or result.stdout or "").strip()
     log_flush(diary_root, f"{step} failed (exit {result.returncode}): {detail}")
 
@@ -127,8 +120,21 @@ def redact(text: str | None, patterns: list[str], max_chars: int) -> str | None:
     return text
 
 
+def redact_event(e: dict, patterns: list[str], max_chars: int) -> None:
+    """In-place redaction of all user-visible text fields in an event."""
+    e["command"] = redact(e.get("command"), patterns, max_chars)
+    e["summary"] = redact(e.get("summary"), patterns, max_chars)
+    detail = e.get("detail")
+    if detail:
+        for key in ("output", "old", "new", "content"):
+            if key in detail:
+                detail[key] = redact(detail[key], patterns, max_chars)
+        for ed in detail.get("edits") or []:
+            ed["old"] = redact(ed.get("old"), patterns, max_chars) or ""
+            ed["new"] = redact(ed.get("new"), patterns, max_chars) or ""
+
+
 def read_meta(meta_file: Path) -> tuple[Path | None, str | None]:
-    """Return (transcript_path, session_cwd) stashed by post_tool.py, or (None, None)."""
     if not meta_file.exists():
         return None, None
     try:
@@ -140,7 +146,6 @@ def read_meta(meta_file: Path) -> tuple[Path | None, str | None]:
 
 
 def parse_ts(s: str | None) -> datetime | None:
-    """Parse an ISO timestamp (with `Z` or an offset) into an aware UTC datetime."""
     if not s:
         return None
     try:
@@ -153,12 +158,9 @@ def parse_ts(s: str | None) -> datetime | None:
 
 
 def scan_transcript(transcript_path: Path | None, since: str | None) -> tuple[str | None, list[dict]]:
-    """Single pass over the session transcript JSONL. Returns:
-      - model: the model of the last assistant turn (whole transcript)
-      - messages: `message` events for assistant text blocks at/after `since`,
-        normalized to the buffer event shape and local timezone.
-    Skips `thinking` (internal) and `tool_use` (already captured via PostToolUse).
-    Best-effort — transcript shape may shift between releases."""
+    """Single pass over the session transcript JSONL.
+    Returns (model, message_events) where message_events carry Claude's text replies.
+    """
     model: str | None = None
     messages: list[dict] = []
     if not transcript_path or not transcript_path.exists():
@@ -197,7 +199,7 @@ def scan_transcript(transcript_path: Path | None, since: str | None) -> tuple[st
     return model, messages
 
 
-def yaml_str(s) -> str:
+def yaml_str(s: object) -> str:
     if s is None:
         return "~"
     s = str(s)
@@ -208,12 +210,138 @@ def yaml_str(s) -> str:
     return s
 
 
+def make_diff(old: str, new: str) -> str:
+    """Compact unified diff without the --- +++ file-name header lines."""
+    lines = list(difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        lineterm="",
+    ))
+    if len(lines) <= 2:
+        return ""
+    return "".join(lines[2:])  # strip --- +++ header
+
+
+# ---------- turn grouping --------------------------------------------------
+
+def group_into_turns(events: list[dict]) -> list[dict]:
+    """Group flat event list into turns, each starting at a prompt event.
+
+    Each turn has:
+      id, prompt, started_at, ended_at, actions (file_edit/command/tool_use),
+      messages (Claude's text replies — MD only, not YAML actions).
+    """
+    turns: list[dict] = []
+    current: dict | None = None
+    turn_num = 0
+
+    def close_turn() -> None:
+        if current is not None:
+            turns.append(current)
+
+    for e in events:
+        if e["type"] == "prompt":
+            close_turn()
+            turn_num += 1
+            current = {
+                "id": f"turn-{turn_num}",
+                "prompt": e["summary"],
+                "started_at": e["timestamp"],
+                "ended_at": e["timestamp"],
+                "actions": [],
+                "messages": [],
+            }
+        else:
+            if current is None:
+                turn_num += 1
+                current = {
+                    "id": f"turn-{turn_num}",
+                    "prompt": None,
+                    "started_at": e["timestamp"],
+                    "ended_at": e["timestamp"],
+                    "actions": [],
+                    "messages": [],
+                }
+            current["ended_at"] = e["timestamp"]
+            if e["type"] == "message":
+                current["messages"].append(e.get("summary") or "")
+            else:
+                current["actions"].append(e)
+
+    close_turn()
+    return turns
+
+
+# ---------- emit helpers ---------------------------------------------------
+
+def _block_literal(text: str, base_indent: str) -> list[str]:
+    """Render text as a YAML literal block scalar (|)."""
+    inner = base_indent + "  "
+    lines = [f"|\n"]
+    for line in text.splitlines():
+        lines.append(f"{inner}{line}\n")
+    return ["".join(lines).rstrip()]
+
+
+def action_yaml_lines(e: dict, pad: str = "      ") -> list[str]:
+    """Render one action event as YAML lines at the given indent."""
+    t = e.get("type")
+    detail = e.get("detail") or {}
+    L: list[str] = []
+
+    if t == "file_edit":
+        tool = e.get("tool", "")
+        L += [f"{pad}- type: file_edit", f"{pad}  tool: {yaml_str(tool)}",
+              f"{pad}  file: {yaml_str(e.get('file'))}"]
+        if tool == "Edit":
+            diff = make_diff(detail.get("old") or "", detail.get("new") or "")
+            if diff:
+                L.append(f"{pad}  diff: |")
+                for dl in diff.splitlines():
+                    L.append(f"{pad}    {dl}")
+        elif tool == "Write":
+            if detail.get("total_lines"):
+                L.append(f"{pad}  lines: {detail['total_lines']}")
+            snippet = (detail.get("content") or "")
+            if snippet:
+                first20 = "\n".join(snippet.splitlines()[:20])
+                L.append(f"{pad}  snippet: |")
+                for sl in first20.splitlines():
+                    L.append(f"{pad}    {sl}")
+        elif tool == "MultiEdit":
+            edits = detail.get("edits") or []
+            if edits:
+                L.append(f"{pad}  edits:")
+                for ed in edits:
+                    diff = make_diff(ed.get("old") or "", ed.get("new") or "")
+                    if diff:
+                        L.append(f"{pad}    - diff: |")
+                        for dl in diff.splitlines():
+                            L.append(f"{pad}        {dl}")
+
+    elif t == "command":
+        L += [f"{pad}- type: command", f"{pad}  cmd: {yaml_str(e.get('command'))}"]
+        output = (detail.get("output") or "").strip()
+        if output:
+            L.append(f"{pad}  output: |")
+            for ol in output.splitlines()[:30]:
+                L.append(f"{pad}    {ol}")
+
+    elif t == "tool_use":
+        L += [f"{pad}- type: tool_use", f"{pad}  tool: {yaml_str(e.get('tool'))}"]
+        if e.get("summary"):
+            L.append(f"{pad}  summary: {yaml_str(e.get('summary'))}")
+
+    return L
+
 
 # ---------- emit -----------------------------------------------------------
 
-def emit_yaml(path: Path, *, session_id, model, git_name, git_email,
-              repo_url, branch, issue_ref, languages, started_at, ended_at,
-              events, prompt, files_touched) -> None:
+def emit_yaml(path: Path, *, session_id: str, model: str | None,
+              git_name: str | None, git_email: str | None,
+              repo_url: str | None, branch: str | None, issue_ref: str | None,
+              languages: list[str], started_at: str, ended_at: str,
+              turns: list[dict], files_touched: list[str]) -> None:
     L = [f"session_id: {session_id}", "",
          "agent:",
          "  name: claude-code",
@@ -229,38 +357,44 @@ def emit_yaml(path: Path, *, session_id, model, git_name, git_email,
         if branch:   L.append(f"  branch: {yaml_str(branch)}")
         L.append("")
     if issue_ref:
-        L.append("issue:")
-        L.append(f"  ref: {yaml_str(issue_ref)}")
-        L.append("")
+        L += ["issue:", f"  ref: {yaml_str(issue_ref)}", ""]
     if languages:
-        L.append("languages: [" + ", ".join(yaml_str(x) for x in languages) + "]")
-        L.append("")
-    L.append(f"started_at: {started_at}")
-    L.append(f"ended_at:   {ended_at}")
-    L.append("")
-    L.append("events:")
-    for e in events:
-        L.append(f"  - timestamp: {e['timestamp']}")
-        L.append(f"    type: {e['type']}")
-        L.append(f"    actor: {e['actor']}")
-        if e.get("tool"):    L.append(f"    tool: {yaml_str(e['tool'])}")
-        if e.get("file"):    L.append(f"    file: {yaml_str(e['file'])}")
-        if e.get("command"): L.append(f"    command: {yaml_str(e['command'])}")
-        if e.get("summary"): L.append(f"    summary: {yaml_str(e['summary'])}")
-    L.append("")
-    L.append("summary:")
-    if prompt: L.append(f"  prompt: {yaml_str(prompt)}")
+        L += ["languages: [" + ", ".join(yaml_str(x) for x in languages) + "]", ""]
+    L += [f"started_at: {started_at}", f"ended_at:   {ended_at}", "", "turns:"]
+
+    for turn in turns:
+        L.append(f"  - id: {turn['id']}")
+        if turn.get("prompt"):
+            L.append(f"    prompt: {yaml_str(turn['prompt'])}")
+        L += [f"    started_at: {turn['started_at']}", f"    ended_at:   {turn['ended_at']}"]
+        actions = [a for a in turn.get("actions", [])
+                   if a.get("type") in ("file_edit", "command", "tool_use")]
+        if actions:
+            L.append("    actions:")
+            for a in actions:
+                L.extend(action_yaml_lines(a))
+
+    cmd_count = sum(
+        len([a for a in t.get("actions", []) if a.get("type") == "command"])
+        for t in turns
+    )
+    L += ["", "summary:"]
     if files_touched:
-        L.append("  files_touched:")
+        L.append("  files_changed:")
         for f in files_touched:
             L.append(f"    - {yaml_str(f)}")
+    if cmd_count:
+        L.append(f"  commands_run: {cmd_count}")
+    L.append(f"  turns: {len(turns)}")
 
     path.write_text("\n".join(L) + "\n", encoding="utf-8", newline="\n")
 
 
-def emit_md(path: Path, *, date, short_id, git_name, git_email, repo_url,
-            branch, issue_ref, started_at, ended_at, prompt, events,
-            files_touched) -> None:
+def emit_md(path: Path, *, date: str, short_id: str,
+            git_name: str | None, git_email: str | None,
+            repo_url: str | None, branch: str | None, issue_ref: str | None,
+            started_at: str, ended_at: str,
+            turns: list[dict], files_touched: list[str]) -> None:
     L = [f"# {date} — {short_id}", ""]
     L.append("- **Agent:** claude-code")
     if git_name or git_email: L.append(f"- **User:** {git_name} <{git_email}>")
@@ -268,21 +402,38 @@ def emit_md(path: Path, *, date, short_id, git_name, git_email, repo_url,
     if issue_ref:             L.append(f"- **Issue:** {issue_ref}")
     L.append(f"- **Span:** {started_at} → {ended_at}")
     L.append("")
-    if prompt:
-        L.extend(["## Prompt", "", f"> {prompt}", ""])
-    L.extend(["## Step by step", ""])
-    for i, e in enumerate(events, start=1):
-        try:
-            hhmm = datetime.fromisoformat(e["timestamp"]).strftime("%H:%M")
-        except ValueError:
-            hhmm = e["timestamp"][:5]
-        label = (e.get("summary")
-                 or (f"$ {e['command']}" if e.get("command") else None)
-                 or (f"{e.get('tool')} {e.get('file')}" if e.get("file") else None)
-                 or f"{e['type']} ({e.get('tool')})")
-        L.append(f"{i}. **{hhmm}** — *{e['actor']}* {label}")
+
+    for turn in turns:
+        header = turn.get("prompt") or "(no prompt)"
+        L += [f"## {turn['id']} — {header}", ""]
+
+        step = 1
+        for a in turn.get("actions", []):
+            try:
+                hhmm = datetime.fromisoformat(a["timestamp"]).strftime("%H:%M")
+            except (ValueError, KeyError):
+                hhmm = "??"
+            t = a.get("type")
+            tool = a.get("tool", "")
+            if t == "file_edit":
+                label = f"**{tool}** `{a.get('file', '')}`"
+            elif t == "command":
+                cmd = (a.get("command") or "")
+                cmd_short = cmd[:80] + ("…" if len(cmd) > 80 else "")
+                label = f"**$** `{cmd_short}`"
+            else:
+                label = f"**{tool}** {a.get('summary', '')}"
+            L.append(f"{step}. **{hhmm}** — {label}")
+            step += 1
+
+        for msg in turn.get("messages", []):
+            preview = (msg or "")[:300].replace("\n", " ")
+            if preview:
+                L += ["", f"> {preview}{'…' if len(msg) > 300 else ''}"]
+        L.append("")
+
     if files_touched:
-        L.extend(["", "## Files touched", ""])
+        L += ["## Files touched", ""]
         L.extend(f"- `{f}`" for f in files_touched)
     L.append("")
     path.write_text("\n".join(L), encoding="utf-8", newline="\n")
@@ -306,7 +457,7 @@ def main() -> None:
     if not buffer_file.exists():
         return
 
-    events = []
+    events: list[dict] = []
     for line in buffer_file.read_text(encoding="utf-8").splitlines():
         if line.strip():
             try:
@@ -317,24 +468,20 @@ def main() -> None:
     if not events:
         return
 
-    # Turn window start (captured before any filtering) — scopes the assistant
-    # messages and is the entry's started_at even if every buffered tool/command
-    # event gets filtered out below.
     turn_start = events[0]["timestamp"]
 
     # ---- config -----------------------------------------------------------
     config_file = diary_root / "dev-diary.config.yaml"
     config = yaml.safe_load(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
-    redaction = config.get("redaction") or {}
-    patterns  = redaction.get("patterns") or []
+    redaction   = config.get("redaction") or {}
+    patterns    = redaction.get("patterns") or []
     capture_cfg = config.get("capture") or {}
-    max_chars = int(capture_cfg.get("max_payload_chars") or 0)
-    for e in events:
-        e["command"] = redact(e.get("command"), patterns, max_chars)
-        e["summary"] = redact(e.get("summary"), patterns, max_chars)
+    max_chars   = int(capture_cfg.get("max_payload_chars") or 0)
 
-    # Drop version-control plumbing (git/gh commands) — process noise, not the
-    # work itself. Only `command` events; messages/prompts/edits pass through.
+    for e in events:
+        redact_event(e, patterns, max_chars)
+
+    # Drop git/gh plumbing commands
     if capture_cfg.get("ignore_git_ops", True):
         git_ops_re = re.compile(capture_cfg.get("git_ops_pattern") or DEFAULT_GIT_OPS_PATTERN)
         events = [
@@ -343,13 +490,10 @@ def main() -> None:
                     and git_ops_re.search(e["command"]))
         ]
 
-    # ---- meta: transcript + the session's working directory ---------------
+    # ---- meta -------------------------------------------------------------
     transcript_path, session_cwd = read_meta(meta_file)
 
-    # ---- git + issue ------------------------------------------------------
-    # Run git in the SESSION's repo (where work happened), not the diary repo —
-    # otherwise repo/branch always reflect the diary. Fall back to diary_root
-    # only when the session cwd is unknown or no longer exists.
+    # ---- git context (from the session's working repo) --------------------
     git_dir = Path(session_cwd) if session_cwd and Path(session_cwd).is_dir() else diary_root
     git_name  = git(git_dir, "config", "user.name")
     git_email = git(git_dir, "config", "user.email")
@@ -364,17 +508,16 @@ def main() -> None:
         if m:
             issue_ref = f"#{m.group(1)}"
 
-    # ---- transcript: model + assistant messages for this turn -------------
-    started_at = turn_start
+    # ---- transcript: model + Claude's text replies ------------------------
     model, message_events = scan_transcript(transcript_path, turn_start)
     for e in message_events:
         e["summary"] = redact(e.get("summary"), patterns, max_chars)
-    # Interleave the assistant's replies with the buffered prompt/tool events.
+
     events = sorted(
         events + message_events,
         key=lambda e: parse_ts(e.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
     )
-    if not events:  # everything was filtered and there were no messages
+    if not events:
         return
 
     # ---- languages --------------------------------------------------------
@@ -384,13 +527,13 @@ def main() -> None:
         if e.get("file") and Path(e["file"]).suffix.lower() in EXT_LANG
     })
 
-    # ---- destination ------------------------------------------------------
+    # ---- destination + grouping ------------------------------------------
     short_id = session_id[:8]
     yaml_path, md_path = resolve_session_paths(diary_root, session_id)
+    turns = group_into_turns(events)
 
-    # ---- summary fields ---------------------------------------------------
-    ended_at = events[-1]["timestamp"]
-    prompt = next((e["summary"] for e in events if e["type"] == "prompt"), None)
+    started_at    = events[0]["timestamp"]
+    ended_at      = events[-1]["timestamp"]
     files_touched = sorted({e["file"] for e in events if e.get("file")})
 
     # ---- emit -------------------------------------------------------------
@@ -400,7 +543,7 @@ def main() -> None:
         git_name=git_name, git_email=git_email,
         repo_url=repo_url, branch=branch, issue_ref=issue_ref,
         languages=languages, started_at=started_at, ended_at=ended_at,
-        events=events, prompt=prompt, files_touched=files_touched,
+        turns=turns, files_touched=files_touched,
     )
     emit_md(
         md_path,
@@ -408,36 +551,29 @@ def main() -> None:
         git_name=git_name, git_email=git_email,
         repo_url=repo_url, branch=branch, issue_ref=issue_ref,
         started_at=started_at, ended_at=ended_at,
-        prompt=prompt, events=events, files_touched=files_touched,
+        turns=turns, files_touched=files_touched,
     )
 
     # ---- commit + push ----------------------------------------------------
     push_cfg = config.get("push") or {}
-    # Canonical key is `when`. Tolerate the legacy `on:` key, which YAML 1.1
-    # (PyYAML) parses as the boolean True — so check both the string and True.
-    push_on = push_cfg.get("when") or push_cfg.get("on") or push_cfg.get(True)
+    push_on  = push_cfg.get("when") or push_cfg.get("on") or push_cfg.get(True)
     if push_on in ("session_end", "every_n_minutes"):
-        msg = f"dev-diary: claude-code {short_id} on {branch}"
+        msg      = f"dev-diary: claude-code {short_id} on {branch}"
         rel_yaml = str(yaml_path.relative_to(diary_root))
-        rel_md = str(md_path.relative_to(diary_root))
+        rel_md   = str(md_path.relative_to(diary_root))
 
-        # Diary commits are auto-generated metadata. GPG signing adds no value
-        # here and breaks inside the hook's non-interactive context (no pinentry
-        # / GPG agent), so disable it unless the user opts back in.
         commit_cmd = ["git"]
         if not push_cfg.get("sign_commits", False):
             commit_cmd += ["-c", "commit.gpgsign=false"]
         commit_cmd += ["commit", "-m", msg, "--quiet"]
 
-        def run(cmd):
+        def run(cmd: list[str]) -> subprocess.CompletedProcess:
             return subprocess.run(cmd, cwd=diary_root, capture_output=True, text=True)
 
         add_res = run(["git", "add", rel_yaml, rel_md])
         if add_res.returncode != 0:
             log_flush_error(diary_root, "git add", add_res)
         elif run(["git", "diff", "--cached", "--quiet"]).returncode != 0:
-            # Only commit when there are staged changes (later turns in the same
-            # session may produce no diff if nothing new was captured).
             commit_res = run(commit_cmd)
             if commit_res.returncode != 0:
                 log_flush_error(diary_root, "git commit", commit_res)
@@ -447,12 +583,7 @@ def main() -> None:
                 push_res = run(["git", "push", remote, target_branch, "--quiet"])
                 if push_res.returncode != 0:
                     log_flush_error(diary_root, "git push", push_res)
-            # session_end: push is deferred — post_tool.py sends it at the
-            # start of the next session so one push covers the full session.
     elif push_on != "manual":
-        # Entries were written to disk, but nothing will be committed. `manual`
-        # is an intentional opt-out; anything else (missing/typo'd push.when) is
-        # almost certainly a misconfig, so make it visible instead of silent.
         log_flush(
             diary_root,
             f"push.when is missing or invalid (got {push_on!r}); entries written "
@@ -460,10 +591,7 @@ def main() -> None:
             f"or manual in dev-diary.config.yaml.",
         )
 
-    # Buffer is intentionally kept — subsequent turns in the same session
-    # append to it, and the next Stop call overwrites the same session file.
-    # post_tool.py cleans up stale buffers (from ended sessions) at the
-    # start of each new session.
+    # Buffer kept — subsequent turns append to it; cleanup at next session start.
 
 
 if __name__ == "__main__":
