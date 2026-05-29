@@ -18,7 +18,11 @@ import argparse
 import datetime
 import json
 import sqlite3
+import sys
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 import yaml  # PyYAML
 
