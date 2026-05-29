@@ -199,6 +199,11 @@ def scan_transcript(transcript_path: Path | None, since: str | None) -> tuple[st
     return model, messages
 
 
+def _sanitize(text: str) -> str:
+    """Replace lone surrogates that Windows tools leave in captured output."""
+    return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
 def yaml_str(s: object) -> str:
     if s is None:
         return "~"
@@ -387,7 +392,7 @@ def emit_yaml(path: Path, *, session_id: str, model: str | None,
         L.append(f"  commands_run: {cmd_count}")
     L.append(f"  turns: {len(turns)}")
 
-    path.write_text("\n".join(L) + "\n", encoding="utf-8", newline="\n")
+    path.write_text(_sanitize("\n".join(L) + "\n"), encoding="utf-8", newline="\n")
 
 
 def emit_md(path: Path, *, date: str, short_id: str,
@@ -436,7 +441,7 @@ def emit_md(path: Path, *, date: str, short_id: str,
         L += ["## Files touched", ""]
         L.extend(f"- `{f}`" for f in files_touched)
     L.append("")
-    path.write_text("\n".join(L), encoding="utf-8", newline="\n")
+    path.write_text(_sanitize("\n".join(L)), encoding="utf-8", newline="\n")
 
 
 # ---------- main -----------------------------------------------------------
