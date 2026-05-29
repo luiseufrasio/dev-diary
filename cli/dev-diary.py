@@ -16,12 +16,19 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import sqlite3
 from pathlib import Path
 
 import yaml  # PyYAML
 
-ROOT = Path(__file__).resolve().parent.parent
+# diary_root: state.json wins (separate diary repo); fall back to plugin repo layout
+_state_file = Path.home() / ".dev-diary" / "state.json"
+if _state_file.exists():
+    ROOT = Path(json.loads(_state_file.read_text(encoding="utf-8"))["diary_root"])
+else:
+    ROOT = Path(__file__).resolve().parent.parent
+
 ENTRIES = ROOT / "entries"
 INDEX = ROOT / ".dev-diary" / "index.sqlite"
 

@@ -5,11 +5,12 @@ argument-hint: [--agent X] [--issue N] [--user EMAIL] [--language X] [--since DA
 
 Run a query against the user's local dev-diary index.
 
-1. Read `~/.dev-diary/state.json` to get `diary_root`. If missing, tell the user to run `/dev-diary:enable` first.
+1. Check `~/.dev-diary/state.json` exists. If missing, tell the user to run `/dev-diary:enable` first.
 
-2. Execute the CLI with the arguments the user passed:
-   ```
-   python <diary_root>/cli/dev-diary.py query $ARGUMENTS
+2. Find the plugin CLI and execute with the arguments the user passed:
+   ```bash
+   CLI=$(ls ~/.claude/plugins/cache/dev-diary/dev-diary/*/cli/dev-diary.py | head -1)
+   python "$CLI" query $ARGUMENTS
    ```
 
 3. Show the output verbatim. If empty, suggest broadening the filters.
