@@ -789,7 +789,7 @@ def summary(args: argparse.Namespace) -> None:
     days      = 30 if args.month else 7
     date_from = (today - datetime.timedelta(days=days - 1)).isoformat()
     date_to   = today.isoformat() + "T23:59:59"
-    period_label = f"últimos {days} dias  ({date_from} → {today.isoformat()})"
+    period_label = f"last {days} days  ({date_from} → {today.isoformat()})"
 
     con = sqlite3.connect(INDEX)
     con.row_factory = sqlite3.Row
