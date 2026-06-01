@@ -573,6 +573,291 @@ document.querySelectorAll('pre code').forEach(el=>hljs.highlightElement(el));
 </html>"""
 
 
+def _build_summary_html(
+    period_label: str,
+    date_from: str,
+    date_to: str,
+    categories: list,
+    languages: list,
+    daily: list,
+    projects: list,
+    top_files: list,
+    sessions: list,
+) -> str:
+    import html as _h
+    import json as _json
+
+    CAT_COLORS = {
+        "fix":      "#e74c3c",
+        "feature":  "#2ecc71",
+        "docs":     "#3498db",
+        "test":     "#9b59b6",
+        "refactor": "#f39c12",
+        "chore":    "#95a5a6",
+        "unknown":  "#bdc3c7",
+    }
+    LANG_COLORS = [
+        "#4e8ef7","#3ecf8e","#f7c948","#f76e4e","#a78bfa",
+        "#34d399","#fb923c","#60a5fa",
+    ]
+
+    n_sessions = len(sessions)
+
+    # ---- chart data -------------------------------------------------------
+    cat_labels  = _json.dumps([r[0] for r in categories])
+    cat_values  = _json.dumps([r[1] for r in categories])
+    cat_colors  = _json.dumps([CAT_COLORS.get(r[0], "#bdc3c7") for r in categories])
+
+    lang_labels = _json.dumps([r[0] for r in languages])
+    lang_values = _json.dumps([r[1] for r in languages])
+    lang_colors = _json.dumps([LANG_COLORS[i % len(LANG_COLORS)] for i in range(len(languages))])
+
+    day_labels  = _json.dumps([r[0] for r in daily])
+    day_values  = _json.dumps([r[1] for r in daily])
+
+    max_files = max((r[1] for r in top_files), default=1)
+
+    # ---- projects table ---------------------------------------------------
+    proj_rows = ""
+    for repo, info in projects:
+        repo_name = _h.escape(repo.split("/")[-1] if "/" in repo else repo)
+        repo_full = _h.escape(repo)
+        badges = "".join(
+            f'<span class="badge" style="background:{CAT_COLORS.get(c,"#bdc3c7")}">'
+            f'{_h.escape(c)} {n}</span>'
+            for c, n in sorted(info["cats"].items(), key=lambda x: -x[1])
+        )
+        proj_rows += (
+            f'<tr><td title="{repo_full}">{repo_name}</td>'
+            f'<td class="num">{info["total"]}</td>'
+            f'<td>{badges}</td></tr>\n'
+        )
+
+    # ---- top files --------------------------------------------------------
+    file_rows = ""
+    for fpath, cnt in top_files:
+        pct = int(cnt / max_files * 100)
+        fname = _h.escape(Path(fpath).name)
+        ffull = _h.escape(fpath)
+        file_rows += (
+            f'<tr><td title="{ffull}">{fname}</td>'
+            f'<td class="num">{cnt}</td>'
+            f'<td><div class="fbar" style="width:{pct}%"></div></td></tr>\n'
+        )
+    if not file_rows:
+        file_rows = '<tr><td colspan="3" class="empty">no file data</td></tr>'
+
+    # ---- session list -----------------------------------------------------
+    sess_rows = ""
+    for r in sessions:
+        ts    = str(r["started_at"] or "")[:16].replace("T", " ")
+        cat   = r["category"] or "unknown"
+        color = CAT_COLORS.get(cat, "#bdc3c7")
+        repo  = _h.escape((r["repo"] or "(local)").split("/")[-1])
+        issue = f'<span class="issue">{_h.escape(r["issue_ref"])}</span>' if r["issue_ref"] else ""
+        prompt = _h.escape((r["prompt"] or "")[:90])
+        if len(r["prompt"] or "") > 90:
+            prompt += "…"
+        hash_ = (r["path"] or "").replace("\\", "/").split("/")[-1].removesuffix(".yaml")
+        sess_rows += (
+            f'<tr>'
+            f'<td class="ts">{_h.escape(ts)}</td>'
+            f'<td><span class="badge" style="background:{color}">{_h.escape(cat)}</span></td>'
+            f'<td>{repo}{issue}</td>'
+            f'<td class="prompt">{prompt}</td>'
+            f'<td class="hash">{_h.escape(hash_)}</td>'
+            f'</tr>\n'
+        )
+
+    no_data_msg = "" if categories else '<p class="empty">No sessions in this period.</p>'
+
+    charts_section = "" if not categories else f"""
+<div class="charts-row">
+  <div class="chart-box">
+    <h2>Category</h2>
+    <canvas id="catChart"></canvas>
+  </div>
+  <div class="chart-box">
+    <h2>Language</h2>
+    <canvas id="langChart" {"style='opacity:.3'" if not languages else ""}></canvas>
+    {"<p class='empty'>no language data</p>" if not languages else ""}
+  </div>
+</div>
+<div class="chart-box wide">
+  <h2>Sessions per day</h2>
+  <canvas id="dayChart"></canvas>
+</div>
+"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>dev-diary · summary</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f6f9;color:#1a1a2e}}
+header{{background:#1a1a2e;color:#fff;padding:18px 32px;display:flex;align-items:baseline;gap:16px}}
+header h1{{font-size:1.3rem;font-weight:700;letter-spacing:.5px}}
+header .meta{{font-size:.85rem;color:#8892b0}}
+main{{max-width:1100px;margin:0 auto;padding:24px 16px}}
+h2{{font-size:1rem;font-weight:600;color:#1a1a2e;margin-bottom:12px}}
+.charts-row{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}}
+.chart-box{{background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08)}}
+.chart-box.wide{{grid-column:1/-1;background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08);margin-bottom:20px}}
+canvas{{max-height:260px}}
+section{{background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08);margin-bottom:20px}}
+table{{width:100%;border-collapse:collapse;font-size:.88rem}}
+th{{text-align:left;padding:6px 8px;border-bottom:2px solid #e8ecf1;color:#5a6a85;font-weight:600}}
+td{{padding:6px 8px;border-bottom:1px solid #e8ecf1;vertical-align:middle}}
+tr:last-child td{{border-bottom:none}}
+td.num{{text-align:right;font-variant-numeric:tabular-nums;width:60px}}
+td.ts{{white-space:nowrap;color:#5a6a85;font-size:.82rem;width:130px}}
+td.hash{{font-family:monospace;font-size:.78rem;color:#8892b0;width:90px}}
+td.prompt{{color:#334}}
+.badge{{display:inline-block;border-radius:4px;padding:2px 7px;font-size:.75rem;color:#fff;margin:1px;white-space:nowrap}}
+.issue{{background:#e8ecf1;color:#5a6a85;border-radius:4px;padding:1px 6px;font-size:.75rem;margin-left:4px}}
+.fbar{{height:8px;background:#4e8ef7;border-radius:4px;min-width:2px}}
+.empty{{color:#8892b0;font-size:.88rem;text-align:center;padding:12px}}
+@media(max-width:680px){{.charts-row{{grid-template-columns:1fr}}}}
+</style>
+</head>
+<body>
+<header>
+  <h1>dev-diary · summary</h1>
+  <span class="meta">{_h.escape(period_label)} &nbsp;·&nbsp; {n_sessions} session{'s' if n_sessions!=1 else ''}</span>
+</header>
+<main>
+{no_data_msg}
+{charts_section}
+<section>
+  <h2>Projects</h2>
+  <table>
+    <tr><th>Repo</th><th>Sessions</th><th>Breakdown</th></tr>
+    {proj_rows or '<tr><td colspan="3" class="empty">no data</td></tr>'}
+  </table>
+</section>
+<section>
+  <h2>Top files</h2>
+  <table>
+    <tr><th>File</th><th>Sessions</th><th></th></tr>
+    {file_rows}
+  </table>
+</section>
+<section>
+  <h2>Sessions</h2>
+  <table>
+    <tr><th>Time</th><th>Category</th><th>Repo</th><th>Prompt</th><th>Hash</th></tr>
+    {sess_rows or '<tr><td colspan="5" class="empty">no sessions</td></tr>'}
+  </table>
+</section>
+</main>
+{"" if not categories else f'''
+<script>
+const catChart = new Chart(document.getElementById("catChart"), {{
+  type:"doughnut",
+  data:{{labels:{cat_labels},datasets:[{{data:{cat_values},backgroundColor:{cat_colors},borderWidth:2}}]}},
+  options:{{plugins:{{legend:{{position:"right"}}}},cutout:"55%"}}
+}});
+{"" if not languages else f"""
+const langChart = new Chart(document.getElementById("langChart"), {{
+  type:"doughnut",
+  data:{{labels:{lang_labels},datasets:[{{data:{lang_values},backgroundColor:{lang_colors},borderWidth:2}}]}},
+  options:{{plugins:{{legend:{{position:"right"}}}},cutout:"55%"}}
+}});
+"""}
+const dayChart = new Chart(document.getElementById("dayChart"), {{
+  type:"bar",
+  data:{{labels:{day_labels},datasets:[{{label:"sessions",data:{day_values},backgroundColor:"#4e8ef7",borderRadius:4}}]}},
+  options:{{plugins:{{legend:{{display:false}}}},scales:{{y:{{beginAtZero:true,ticks:{{stepSize:1}}}}}}}}
+}});
+</script>'''}
+</body>
+</html>"""
+
+
+def summary(args: argparse.Namespace) -> None:
+    import tempfile
+    import webbrowser
+
+    if not INDEX.exists():
+        reindex()
+
+    today     = datetime.date.today()
+    days      = 30 if args.month else 7
+    date_from = (today - datetime.timedelta(days=days - 1)).isoformat()
+    date_to   = today.isoformat() + "T23:59:59"
+    period_label = f"últimos {days} dias  ({date_from} → {today.isoformat()})"
+
+    con = sqlite3.connect(INDEX)
+    con.row_factory = sqlite3.Row
+
+    categories = con.execute(
+        "SELECT COALESCE(category,'unknown') cat, COUNT(*) cnt FROM sessions"
+        " WHERE started_at >= ? AND started_at <= ? GROUP BY 1 ORDER BY 2 DESC",
+        (date_from, date_to),
+    ).fetchall()
+
+    languages = con.execute(
+        "SELECT l.language, COUNT(DISTINCT l.session_id) cnt"
+        " FROM session_languages l JOIN sessions s ON l.session_id = s.session_id"
+        " WHERE s.started_at >= ? AND s.started_at <= ?"
+        " GROUP BY l.language ORDER BY cnt DESC LIMIT 8",
+        (date_from, date_to),
+    ).fetchall()
+
+    daily = con.execute(
+        "SELECT substr(started_at,1,10) day, COUNT(*) cnt FROM sessions"
+        " WHERE started_at >= ? AND started_at <= ? GROUP BY 1 ORDER BY 1",
+        (date_from, date_to),
+    ).fetchall()
+
+    all_sessions = con.execute(
+        "SELECT started_at, repo, branch, prompt, category, issue_ref, path FROM sessions"
+        " WHERE started_at >= ? AND started_at <= ? ORDER BY started_at DESC",
+        (date_from, date_to),
+    ).fetchall()
+
+    top_files = con.execute(
+        "SELECT f.file, COUNT(DISTINCT f.session_id) cnt"
+        " FROM session_files f JOIN sessions s ON f.session_id = s.session_id"
+        " WHERE s.started_at >= ? AND s.started_at <= ?"
+        " GROUP BY f.file ORDER BY cnt DESC LIMIT 10",
+        (date_from, date_to),
+    ).fetchall()
+
+    con.close()
+
+    if not all_sessions:
+        print(f"no sessions in the last {days} days")
+        return
+
+    proj_map: dict = {}
+    for r in all_sessions:
+        key = r["repo"] or "(local)"
+        p   = proj_map.setdefault(key, {"total": 0, "cats": {}})
+        p["total"] += 1
+        cat = r["category"] or "unknown"
+        p["cats"][cat] = p["cats"].get(cat, 0) + 1
+    projects = sorted(proj_map.items(), key=lambda x: -x[1]["total"])
+
+    html = _build_summary_html(
+        period_label, date_from, today.isoformat(),
+        [(r[0], r[1]) for r in categories],
+        [(r[0], r[1]) for r in languages],
+        [(r[0], r[1]) for r in daily],
+        projects,
+        [(r[0], r[1]) for r in top_files],
+        all_sessions,
+    )
+    tmp = Path(tempfile.mktemp(suffix=".html"))
+    tmp.write_text(html, encoding="utf-8")
+    webbrowser.open(tmp.as_uri())
+    print(f"summary: {len(all_sessions)} session(s) · last {days} days → {tmp.name}")
+
+
 def replay(args: argparse.Namespace) -> None:
     import tempfile
     import webbrowser
@@ -641,6 +926,11 @@ def main() -> None:
     s = sub.add_parser("show")
     s.add_argument("ref", help="e.g. 2026/05/23/b1a01ad7")
     s.set_defaults(func=show)
+
+    sm = sub.add_parser("summary", help="visual report for a period (opens in browser)")
+    sm.add_argument("--week",  action="store_true", help="last 7 days (default)")
+    sm.add_argument("--month", action="store_true", help="last 30 days")
+    sm.set_defaults(func=summary)
 
     rp = sub.add_parser("replay", help="open session as slides in browser")
     rp.add_argument("ref", help="session hash or full ref")
