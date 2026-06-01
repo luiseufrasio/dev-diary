@@ -277,6 +277,44 @@ def group_into_turns(events: list[dict]) -> list[dict]:
     return turns
 
 
+# ---------- classification -------------------------------------------------
+
+_CATEGORY_RULES: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+    ("test",
+     ("test_", "_test.", ".spec.", ".test.", "/tests/", "/test/"),
+     ("test", "spec", "tdd", "coverage", "unittest", "pytest", "jest", "assert")),
+    ("fix",
+     (),
+     ("fix", "bug", "erro", "error", "crash", "except", "corrig", "falha",
+      "broken", "failing", "resolve", "conserta")),
+    ("docs",
+     (".md", ".rst", "readme", "changelog", "/docs/", "/doc/"),
+     ("doc", "readme", "comment", "document", "explain", "changelog",
+      "comentar", "documentar")),
+    ("refactor",
+     (),
+     ("refactor", "refatorar", "clean", "simplif", "extract", "rename", "reorgan",
+      "restructure", "rewrite", "limpar", "reorganizar", "reestruturar", "otimiz")),
+    ("feature",
+     (),
+     ("add ", "implement", "create", "new feature", "build",
+      "adicionar", "implementar", "criar", "feature")),
+    ("chore",
+     (),
+     ("upgrade", "bump", "setup", "install", "migrat",
+      "atualizar", "configurar", "update dep")),
+]
+
+
+def classify_session(prompts_text: str, files: list[str]) -> str:
+    text = prompts_text.lower()
+    file_str = " ".join(f.lower() for f in files)
+    for category, file_pats, kws in _CATEGORY_RULES:
+        if any(p in file_str for p in file_pats) or any(kw in text for kw in kws):
+            return category
+    return "unknown"
+
+
 # ---------- emit helpers ---------------------------------------------------
 
 def _block_literal(text: str, base_indent: str) -> list[str]:
@@ -346,7 +384,7 @@ def emit_yaml(path: Path, *, session_id: str, model: str | None,
               git_name: str | None, git_email: str | None,
               repo_url: str | None, branch: str | None, issue_ref: str | None,
               languages: list[str], started_at: str, ended_at: str,
-              turns: list[dict], files_touched: list[str]) -> None:
+              turns: list[dict], files_touched: list[str], category: str = "unknown") -> None:
     L = [f"session_id: {session_id}", "",
          "agent:",
          "  name: claude-code",
@@ -384,6 +422,7 @@ def emit_yaml(path: Path, *, session_id: str, model: str | None,
         for t in turns
     )
     L += ["", "summary:"]
+    L.append(f"  category: {yaml_str(category)}")
     if files_touched:
         L.append("  files_changed:")
         for f in files_touched:
@@ -541,6 +580,9 @@ def main() -> None:
     ended_at      = events[-1]["timestamp"]
     files_touched = sorted({e["file"] for e in events if e.get("file")})
 
+    all_prompts = " ".join(t.get("prompt") or "" for t in turns)
+    category    = classify_session(all_prompts, files_touched)
+
     # ---- emit -------------------------------------------------------------
     emit_yaml(
         yaml_path,
@@ -548,7 +590,7 @@ def main() -> None:
         git_name=git_name, git_email=git_email,
         repo_url=repo_url, branch=branch, issue_ref=issue_ref,
         languages=languages, started_at=started_at, ended_at=ended_at,
-        turns=turns, files_touched=files_touched,
+        turns=turns, files_touched=files_touched, category=category,
     )
     emit_md(
         md_path,

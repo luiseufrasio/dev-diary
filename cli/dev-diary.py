@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at  TEXT,
   ended_at    TEXT,
   prompt      TEXT,
-  outcome     TEXT
+  outcome     TEXT,
+  category    TEXT
 );
 CREATE TABLE IF NOT EXISTS session_languages (
   session_id TEXT, language TEXT,
@@ -62,11 +63,47 @@ CREATE TABLE IF NOT EXISTS session_files (
   session_id TEXT, file TEXT,
   PRIMARY KEY (session_id, file)
 );
-CREATE INDEX IF NOT EXISTS idx_started ON sessions(started_at);
-CREATE INDEX IF NOT EXISTS idx_agent   ON sessions(agent_name);
-CREATE INDEX IF NOT EXISTS idx_issue   ON sessions(issue_ref);
-CREATE INDEX IF NOT EXISTS idx_email   ON sessions(git_email);
+CREATE INDEX IF NOT EXISTS idx_started  ON sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_agent    ON sessions(agent_name);
+CREATE INDEX IF NOT EXISTS idx_issue    ON sessions(issue_ref);
+CREATE INDEX IF NOT EXISTS idx_email    ON sessions(git_email);
+CREATE INDEX IF NOT EXISTS idx_category ON sessions(category);
 """
+
+_CATEGORY_RULES: list[tuple[str, tuple, tuple]] = [
+    ("test",
+     ("test_", "_test.", ".spec.", ".test.", "/tests/", "/test/"),
+     ("test", "spec", "tdd", "coverage", "unittest", "pytest", "jest", "assert")),
+    ("fix",
+     (),
+     ("fix", "bug", "erro", "error", "crash", "except", "corrig", "falha",
+      "broken", "failing", "resolve", "conserta")),
+    ("docs",
+     (".md", ".rst", "readme", "changelog", "/docs/", "/doc/"),
+     ("doc", "readme", "comment", "document", "explain", "changelog",
+      "comentar", "documentar")),
+    ("refactor",
+     (),
+     ("refactor", "refatorar", "clean", "simplif", "extract", "rename", "reorgan",
+      "restructure", "rewrite", "limpar", "reorganizar", "reestruturar", "otimiz")),
+    ("feature",
+     (),
+     ("add ", "implement", "create", "new feature", "build",
+      "adicionar", "implementar", "criar", "feature")),
+    ("chore",
+     (),
+     ("upgrade", "bump", "setup", "install", "migrat",
+      "atualizar", "configurar", "update dep")),
+]
+
+
+def classify_session(prompts_text: str, files: list) -> str:
+    text = prompts_text.lower()
+    file_str = " ".join(f.lower() for f in files)
+    for category, file_pats, kws in _CATEGORY_RULES:
+        if any(p in file_str for p in file_pats) or any(kw in text for kw in kws):
+            return category
+    return "unknown"
 
 
 def reindex() -> int:
@@ -79,8 +116,16 @@ def reindex() -> int:
     count = 0
     for yml in ENTRIES.rglob("*.yaml"):
         data = yaml.safe_load(yml.read_text(encoding="utf-8"))
+        summary = data.get("summary") or {}
+        category = summary.get("category")
+        if not category:
+            turns = data.get("turns") or []
+            all_prompts = " ".join((t.get("prompt") or "") for t in turns)
+            files = summary.get("files_changed") or summary.get("files_touched") or []
+            category = classify_session(all_prompts, files)
+
         con.execute(
-            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 data["session_id"],
                 str(yml.relative_to(ROOT)),
@@ -94,8 +139,9 @@ def reindex() -> int:
                 data.get("started_at"),
                 data.get("ended_at"),
                 next((t.get("prompt") for t in (data.get("turns") or []) if t.get("prompt")), None)
-                or (data.get("summary") or {}).get("prompt"),
-                (data.get("summary") or {}).get("outcome"),
+                or summary.get("prompt"),
+                summary.get("outcome"),
+                category,
             ),
         )
         for lang in data.get("languages") or []:
@@ -104,7 +150,6 @@ def reindex() -> int:
                 (data["session_id"], lang),
             )
         # files_changed lives in summary (new schema); fall back to files_touched (old)
-        summary = data.get("summary") or {}
         for f in summary.get("files_changed") or summary.get("files_touched") or []:
             con.execute(
                 "INSERT OR IGNORE INTO session_files VALUES (?,?)",
@@ -137,6 +182,9 @@ def query(args: argparse.Namespace) -> None:
     if args.file:
         where.append("session_id IN (SELECT session_id FROM session_files WHERE file LIKE ?)")
         params.append(f"%{args.file}%")
+    if args.category:
+        where.append("category = ?")
+        params.append(args.category)
 
     sql = "SELECT * FROM sessions"
     if where:
@@ -582,6 +630,7 @@ def main() -> None:
     q.add_argument("--file", help="filter by file path substring")
     q.add_argument("--since")
     q.add_argument("--until")
+    q.add_argument("--category", help="filter by category (fix, feature, docs, test, refactor, chore, unknown)")
     q.add_argument("-v", "--verbose", action="store_true")
     q.set_defaults(func=query)
 
